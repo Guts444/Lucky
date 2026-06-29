@@ -1,0 +1,201 @@
+using Lucky.Core;
+
+namespace Lucky.Tests;
+
+public sealed class LuckyStoreTests
+{
+    [Fact]
+    public async Task LoadAsync_WhenFileMissingCreatesStateFileAndSaveAsyncRoundTripsState()
+    {
+        var tempRoot = CreateTempRoot();
+        try
+        {
+            var statePath = Path.Combine(tempRoot, "state", "lucky-state.json");
+            var store = new LuckyStore(statePath);
+
+            var state = await store.LoadAsync();
+
+            Assert.True(File.Exists(statePath));
+            Assert.Empty(state.Projects);
+            Assert.Empty(state.Sessions);
+
+            var projectDirectory = Directory.CreateDirectory(Path.Combine(tempRoot, "ProjectAlpha")).FullName;
+            var project = LuckyStore.EnsureProject(state, projectDirectory);
+            var session = Assert.Single(state.Sessions);
+            session.Title = "Planning";
+            session.Messages.Add(new ChatMessage
+            {
+                Role = ChatRole.User,
+                Content = "Remember my editor preferences."
+            });
+            state.Memories.Add(new MemoryItem
+            {
+                Summary = "I prefer concise code review feedback",
+                ProjectId = project.Id,
+                SourceSessionId = session.Id,
+                Tags = ["concise", "review"]
+            });
+
+            await store.SaveAsync(state);
+
+            var loaded = await new LuckyStore(statePath).LoadAsync();
+
+            var loadedProject = Assert.Single(loaded.Projects);
+            Assert.Equal(project.Id, loadedProject.Id);
+            Assert.Equal(Path.GetFullPath(projectDirectory), loadedProject.Path);
+            Assert.Equal(project.Id, loaded.Settings.SelectedProjectId);
+
+            var loadedSession = Assert.Single(loaded.Sessions);
+            Assert.Equal(project.Id, loadedSession.ProjectId);
+            Assert.Equal("Planning", loadedSession.Title);
+            var message = Assert.Single(loadedSession.Messages);
+            Assert.Equal(ChatRole.User, message.Role);
+            Assert.Equal("Remember my editor preferences.", message.Content);
+
+            var loadedMemory = Assert.Single(loaded.Memories);
+            Assert.Equal("I prefer concise code review feedback", loadedMemory.Summary);
+            Assert.Equal(project.Id, loadedMemory.ProjectId);
+            Assert.Equal(session.Id, loadedMemory.SourceSessionId);
+        }
+        finally
+        {
+            DeleteTempRoot(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void EnsureProject_ReusesExistingProjectAndKeepsSingleInitialSession()
+    {
+        var tempRoot = CreateTempRoot();
+        try
+        {
+            var state = new LuckyState();
+            var projectDirectory = Directory.CreateDirectory(Path.Combine(tempRoot, "ProjectBeta")).FullName;
+            var project = LuckyStore.EnsureProject(state, projectDirectory);
+            var oldLastOpenedAt = DateTimeOffset.UtcNow.AddDays(-1);
+            project.LastOpenedAt = oldLastOpenedAt;
+
+            var reopened = LuckyStore.EnsureProject(state, Path.Combine(projectDirectory, "."));
+
+            Assert.Same(project, reopened);
+            Assert.Single(state.Projects);
+            Assert.Single(state.Sessions);
+            Assert.Equal(project.Id, state.Settings.SelectedProjectId);
+            Assert.True(reopened.LastOpenedAt > oldLastOpenedAt);
+
+            var titledSession = LuckyStore.CreateSession(project.Id, "  Research plan  ");
+            Assert.Equal(project.Id, titledSession.ProjectId);
+            Assert.Equal("Research plan", titledSession.Title);
+
+            var defaultSession = LuckyStore.CreateSession(project.Id, "   ");
+            Assert.Equal("New chat", defaultSession.Title);
+        }
+        finally
+        {
+            DeleteTempRoot(tempRoot);
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_NormalizesOldDeepSeekDefaults()
+    {
+        var tempRoot = CreateTempRoot();
+        try
+        {
+            var statePath = Path.Combine(tempRoot, "lucky-state.json");
+            await File.WriteAllTextAsync(statePath, """
+            {
+              "Settings": {
+                "Persona": "test",
+                "ActiveProvider": 0,
+                "AccessLevel": 1,
+                "DeepSeek": {
+                  "DisplayName": "DeepSeek",
+                  "BaseUrl": "https://api.deepseek.com/v1",
+                  "Model": "deepseek-chat",
+                  "RequiresApiKey": true,
+                  "ThinkingEnabled": true,
+                  "ReasoningEffort": "max"
+                },
+                "LmStudio": { "DisplayName": "LM Studio", "BaseUrl": "http://127.0.0.1:1234/v1", "Model": "local-model" },
+                "Custom": { "DisplayName": "Custom", "BaseUrl": "http://127.0.0.1:8000/v1", "Model": "local-model" }
+              },
+              "Projects": [],
+              "Sessions": [],
+              "Memories": []
+            }
+            """);
+
+            var state = await new LuckyStore(statePath).LoadAsync();
+
+            Assert.Equal("https://api.deepseek.com", state.Settings.DeepSeek.BaseUrl);
+            Assert.True(state.Settings.DeepSeek.SupportsThinking);
+            Assert.Equal(1000000, state.Settings.DeepSeek.ContextWindowTokens);
+            Assert.Equal(32768, state.Settings.LmStudio.ContextWindowTokens);
+            Assert.Equal(2200, state.Settings.MemoryCharLimit);
+            Assert.Equal(1375, state.Settings.UserProfileCharLimit);
+        }
+        finally
+        {
+            DeleteTempRoot(tempRoot);
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_NormalizesSavedDeepSeekV4Context()
+    {
+        var tempRoot = CreateTempRoot();
+        try
+        {
+            var statePath = Path.Combine(tempRoot, "lucky-state.json");
+            await File.WriteAllTextAsync(statePath, """
+            {
+              "Settings": {
+                "Persona": "test",
+                "ActiveProvider": 0,
+                "AccessLevel": 1,
+                "DeepSeek": {
+                  "DisplayName": "DeepSeek",
+                  "BaseUrl": "https://api.deepseek.com",
+                  "Model": "deepseek-v4-flash",
+                  "RequiresApiKey": true,
+                  "SupportsThinking": true,
+                  "ThinkingEnabled": true,
+                  "ReasoningEffort": "max",
+                  "ContextWindowTokens": 131072
+                },
+                "LmStudio": { "DisplayName": "LM Studio", "BaseUrl": "http://127.0.0.1:1234/v1", "Model": "local-model" },
+                "Custom": { "DisplayName": "Custom", "BaseUrl": "http://127.0.0.1:8000/v1", "Model": "local-model" }
+              },
+              "Projects": [],
+              "Sessions": [],
+              "Memories": []
+            }
+            """);
+
+            var state = await new LuckyStore(statePath).LoadAsync();
+
+            Assert.Equal(1_000_000, state.Settings.DeepSeek.ContextWindowTokens);
+            Assert.True(state.Settings.DeepSeek.SupportsThinking);
+        }
+        finally
+        {
+            DeleteTempRoot(tempRoot);
+        }
+    }
+
+    private static string CreateTempRoot()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "Lucky.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void DeleteTempRoot(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            Directory.Delete(path, recursive: true);
+        }
+    }
+}

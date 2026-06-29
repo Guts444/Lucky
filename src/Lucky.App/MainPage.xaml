@@ -1,0 +1,728 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Lucky_App.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Loaded="Page_Loaded"
+    RequestedTheme="Dark"
+    mc:Ignorable="d">
+
+    <Page.Resources>
+        <SolidColorBrush x:Key="CanvasBrush" Color="#101111" />
+        <SolidColorBrush x:Key="RailBrush" Color="#CC20252D" />
+        <SolidColorBrush x:Key="GlassBrush" Color="#E52A2A2A" />
+        <SolidColorBrush x:Key="GlassSoftBrush" Color="#B8252525" />
+        <SolidColorBrush x:Key="StrokeBrush" Color="#3A3A3A" />
+        <SolidColorBrush x:Key="StrokeSoftBrush" Color="#2B2B2B" />
+        <SolidColorBrush x:Key="TextBrush" Color="#F4F4F4" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#A6A6A6" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#FF7A1A" />
+        <SolidColorBrush x:Key="BlueAccentBrush" Color="#4EA3FF" />
+
+        <Style x:Key="RailButtonStyle" TargetType="Button">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        </Style>
+
+        <Style x:Key="IconOnlyButtonStyle" TargetType="Button">
+            <Setter Property="MinWidth" Value="32" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="7" />
+            <Setter Property="CornerRadius" Value="8" />
+        </Style>
+
+        <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#8E8E8E" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Margin" Value="8,18,0,8" />
+        </Style>
+
+        <Style x:Key="MutedTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+
+        <Style x:Key="SettingsCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource GlassBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+        </Style>
+    </Page.Resources>
+
+    <Grid Background="{StaticResource CanvasBrush}">
+        <Grid Visibility="{Binding ChatVisibility}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="298" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border
+                Grid.Column="0"
+                Background="{StaticResource RailBrush}"
+                BorderBrush="#303743"
+                BorderThickness="0,0,1,0">
+                <Grid Padding="8,10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Spacing="6">
+                        <Button Command="{Binding NewChatCommand}" Style="{StaticResource RailButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <FontIcon Glyph="&#xE710;" FontSize="13" />
+                                <TextBlock Text="New chat" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="1" Margin="0,18,0,8" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <TextBlock Text="Projects" Style="{StaticResource SectionLabelStyle}" />
+                            <ListView
+                                ItemsSource="{Binding Projects}"
+                                SelectedItem="{Binding SelectedProject, Mode=TwoWay}"
+                                SelectionMode="Single"
+                                Background="Transparent"
+                                Padding="0">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Padding="8,6" ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <FontIcon Glyph="&#xE8F1;" FontSize="13" Foreground="{StaticResource MutedBrush}" />
+                                            <TextBlock
+                                                Grid.Column="1"
+                                                Text="{Binding Name}"
+                                                Foreground="{StaticResource TextBrush}"
+                                                TextTrimming="CharacterEllipsis" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+
+                            <Grid Margin="8,14,8,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="History" Foreground="#8E8E8E" />
+                                <Button
+                                    Grid.Column="1"
+                                    Click="ChooseFolder_Click"
+                                    ToolTipService.ToolTip="Choose working folder"
+                                    Style="{StaticResource IconOnlyButtonStyle}">
+                                    <FontIcon Glyph="&#xE8B7;" FontSize="14" />
+                                </Button>
+                            </Grid>
+
+                            <ListView
+                                ItemsSource="{Binding Sessions}"
+                                SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                                SelectionMode="Single"
+                                Background="Transparent"
+                                Padding="0">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Padding="32,7,8,7" ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock
+                                                Text="{Binding Title}"
+                                                Foreground="{StaticResource TextBrush}"
+                                                FontSize="14"
+                                                TextTrimming="CharacterEllipsis" />
+                                            <TextBlock
+                                                Grid.Column="1"
+                                                Text="{Binding Detail}"
+                                                Foreground="{StaticResource MutedBrush}"
+                                                FontSize="12" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <Button
+                        Grid.Row="2"
+                        Command="{Binding OpenSettingsCommand}"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        Background="Transparent"
+                        BorderBrush="#354052"
+                        BorderThickness="0,1,0,0"
+                        Padding="6,12,6,2">
+                        <Grid ColumnSpacing="10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Width="28" Height="28" Background="#2D9CDB" CornerRadius="14">
+                                <TextBlock
+                                    Text="IB"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    FontSize="11"
+                                    FontWeight="SemiBold" />
+                            </Border>
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="Igor Barreto" Foreground="{StaticResource TextBrush}" FontSize="13" />
+                                <TextBlock Text="Local profile" Foreground="{StaticResource MutedBrush}" FontSize="11" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Column="1" Background="{StaticResource CanvasBrush}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Border BorderBrush="#292929" BorderThickness="0,0,0,1" Padding="18,12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <FontIcon Glyph="&#xE8A5;" FontSize="14" Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock
+                                Text="{Binding SelectedSession.Title, FallbackValue=New chat}"
+                                Foreground="{StaticResource TextBrush}"
+                                FontWeight="SemiBold" />
+                            <TextBlock Text="..." Foreground="{StaticResource MutedBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1">
+                    <StackPanel
+                        Visibility="{Binding EmptyStateVisibility}"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="760"
+                        Margin="24"
+                        Spacing="28">
+                        <TextBlock
+                            Text="{Binding ChatHeading}"
+                            Foreground="{StaticResource TextBrush}"
+                            TextAlignment="Center"
+                            FontSize="28"
+                            FontWeight="SemiBold" />
+                        <TextBlock
+                            Text="{Binding ChatSubheading}"
+                            Foreground="{StaticResource MutedBrush}"
+                            TextAlignment="Center"
+                            TextWrapping="Wrap"
+                            FontSize="14" />
+                    </StackPanel>
+
+                    <ScrollViewer
+                        x:Name="MessageScrollViewer"
+                        Visibility="{Binding MessageListVisibility}"
+                        VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled"
+                        Loaded="MessageScrollViewer_Loaded"
+                        SizeChanged="MessageScrollViewer_SizeChanged">
+                        <ItemsControl
+                            x:Name="MessageList"
+                            ItemsSource="{Binding Messages}"
+                            Margin="0,24,0,120"
+                            Loaded="MessageList_Loaded"
+                            SizeChanged="MessageList_SizeChanged">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid MaxWidth="940" HorizontalAlignment="Stretch" Margin="0,0,0,24" Padding="24,0">
+                                        <Border
+                                            MaxWidth="{Binding BubbleMaxWidth}"
+                                            HorizontalAlignment="{Binding BubbleAlignment}"
+                                            Background="{Binding BubbleBrush}"
+                                            BorderBrush="{Binding BubbleBorderBrush}"
+                                            BorderThickness="{Binding BubbleBorderThickness}"
+                                            CornerRadius="{Binding BubbleCornerRadius}"
+                                            Padding="{Binding BubblePadding}">
+                                            <StackPanel Spacing="9">
+                                                <Grid Visibility="{Binding HeaderVisibility}">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock
+                                                        Text="{Binding Tone}"
+                                                        Foreground="#9CB8FF"
+                                                        FontWeight="SemiBold" />
+                                                </Grid>
+                                                <Expander
+                                                    Visibility="{Binding ThinkingVisibility}"
+                                                    IsExpanded="{Binding IsThinkingExpanded, Mode=TwoWay}">
+                                                    <Expander.Header>
+                                                        <Grid MinWidth="140" Height="25">
+                                                            <TextBlock
+                                                                Text="{Binding ThinkingLabel}"
+                                                                Foreground="{StaticResource MutedBrush}"
+                                                                FontSize="12" />
+                                                            <ProgressBar
+                                                                Height="2"
+                                                                VerticalAlignment="Bottom"
+                                                                IsIndeterminate="{Binding IsThinking}"
+                                                                Foreground="{StaticResource TextBrush}" />
+                                                        </Grid>
+                                                    </Expander.Header>
+                                                    <TextBlock
+                                                        Text="{Binding ThinkingText}"
+                                                        Foreground="{StaticResource MutedBrush}"
+                                                        IsTextSelectionEnabled="True"
+                                                        TextWrapping="Wrap"
+                                                        FontSize="12"
+                                                        LineHeight="18" />
+                                                </Expander>
+                                                <TextBlock
+                                                    Text="{Binding DisplayContent}"
+                                                    Foreground="{StaticResource TextBrush}"
+                                                    IsTextSelectionEnabled="True"
+                                                    TextWrapping="Wrap"
+                                                    LineHeight="21" />
+                                                <TextBlock
+                                                    Text="{Binding Timestamp}"
+                                                    Foreground="{StaticResource MutedBrush}"
+                                                    FontSize="12"
+                                                    HorizontalAlignment="{Binding TimestampAlignment}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+
+                <Grid Grid.Row="2" Padding="0,0,0,16">
+                    <Border
+                        MaxWidth="736"
+                        HorizontalAlignment="Center"
+                        Margin="18,0"
+                        Background="{StaticResource GlassBrush}"
+                        BorderBrush="{StaticResource StrokeBrush}"
+                        BorderThickness="1"
+                        CornerRadius="18"
+                        Padding="12,10">
+                        <Grid RowSpacing="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBox
+                                x:Name="InputBox"
+                                Text="{Binding MessageInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                PlaceholderText="Ask for follow-up changes"
+                                KeyDown="InputBox_KeyDown"
+                                AcceptsReturn="False"
+                                TextWrapping="Wrap"
+                                MinHeight="44"
+                                BorderThickness="0"
+                                Background="Transparent" />
+                            <Grid Grid.Row="1" ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <ComboBox
+                                    ItemsSource="{Binding AccessLevels}"
+                                    SelectedItem="{Binding SelectedAccessLevel, Mode=TwoWay}"
+                                    Foreground="{StaticResource AccentBrush}"
+                                    MinWidth="108" />
+                                <Border
+                                    Grid.Column="2"
+                                    VerticalAlignment="Center"
+                                    Background="#80262626"
+                                    CornerRadius="8"
+                                    Padding="8,4">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Text="{Binding ContextUsageLabel}" Foreground="{StaticResource MutedBrush}" FontSize="11" />
+                                        <ProgressBar Width="64" Height="5" Value="{Binding ContextUsagePercent}" Maximum="100" />
+                                        <TextBlock Text="{Binding ContextUsagePercentText}" Foreground="{StaticResource MutedBrush}" FontSize="11" />
+                                    </StackPanel>
+                                </Border>
+                                <ComboBox
+                                    Grid.Column="3"
+                                    ItemsSource="{Binding ModelOptions}"
+                                    SelectedItem="{Binding SelectedModelOption, Mode=TwoWay}"
+                                    DisplayMemberPath="Label"
+                                    MinWidth="210" />
+                                <Button
+                                    Grid.Column="4"
+                                    Command="{Binding SendCommand}"
+                                    Style="{StaticResource IconOnlyButtonStyle}">
+                                    <FontIcon Glyph="&#xE724;" FontSize="15" />
+                                </Button>
+                            </Grid>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <Grid Visibility="{Binding SettingsVisibility}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="298" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border
+                Grid.Column="0"
+                Background="{StaticResource RailBrush}"
+                BorderBrush="#303743"
+                BorderThickness="0,0,1,0"
+                Padding="8,12">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Spacing="8">
+                        <Button Command="{Binding BackToAppCommand}" Style="{StaticResource RailButtonStyle}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <FontIcon Glyph="&#xE72B;" FontSize="13" />
+                                <TextBlock Text="Back to app" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="1" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Personal" Style="{StaticResource SectionLabelStyle}" />
+                            <Button Style="{StaticResource RailButtonStyle}">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <FontIcon Glyph="&#xE713;" FontSize="13" />
+                                    <TextBlock Text="General" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource RailButtonStyle}">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <FontIcon Glyph="&#xE7C3;" FontSize="13" />
+                                    <TextBlock Text="Personalization" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource RailButtonStyle}">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <FontIcon Glyph="&#xE8A5;" FontSize="13" />
+                                    <TextBlock Text="Model" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource RailButtonStyle}">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <FontIcon Glyph="&#xE8BD;" FontSize="13" />
+                                    <TextBlock Text="Memory" />
+                                </StackPanel>
+                            </Button>
+
+                            <TextBlock Text="Integrations" Style="{StaticResource SectionLabelStyle}" />
+                            <Button Style="{StaticResource RailButtonStyle}">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <FontIcon Glyph="&#xE774;" FontSize="13" />
+                                    <TextBlock Text="SearXNG" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <TextBlock
+                        Grid.Row="2"
+                        Text="Lucky settings"
+                        Foreground="{StaticResource MutedBrush}"
+                        Margin="8,12,0,0" />
+                </Grid>
+            </Border>
+
+            <ScrollViewer Grid.Column="1" Background="{StaticResource CanvasBrush}" Padding="0,44,0,56">
+                <StackPanel Width="672" HorizontalAlignment="Center" Spacing="30">
+                    <TextBlock Text="General" Foreground="{StaticResource TextBrush}" FontSize="20" FontWeight="SemiBold" />
+
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="Work mode" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="Choose how much technical detail Lucky shows" Style="{StaticResource MutedTextStyle}" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Style="{StaticResource SettingsCardStyle}" Padding="16">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE943;" VerticalAlignment="Center" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="For coding" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="More technical responses and control" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <RadioButton Grid.Column="2" IsChecked="True" />
+                                </Grid>
+                            </Border>
+                            <Border Grid.Column="1" Style="{StaticResource SettingsCardStyle}" Padding="16">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon Glyph="&#xE8F2;" VerticalAlignment="Center" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="For everyday work" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Same power, less technical detail" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <RadioButton Grid.Column="2" />
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Model and reasoning" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="240" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Model" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Select DeepSeek Flash/Pro with reasoning, or your local LM Studio model" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ComboBox
+                                        Grid.Column="1"
+                                        ItemsSource="{Binding ModelOptions}"
+                                        SelectedItem="{Binding SelectedModelOption, Mode=TwoWay}"
+                                        DisplayMemberPath="Label" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="240" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Endpoint" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                                    <TextBox Grid.Column="1" Text="{Binding ProviderEndpoint, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="240" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Context window" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Used by the composer context meter" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <NumberBox Grid.Column="1" Value="{Binding ContextWindowTokens, Mode=TwoWay}" Minimum="1024" Maximum="10000000" SpinButtonPlacementMode="Compact" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="240" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="API key" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                                    <PasswordBox Grid.Column="1" x:Name="ApiKeyBox" PlaceholderText="Leave blank to keep saved key" PasswordChanged="ApiKeyBox_PasswordChanged" />
+                                </Grid>
+                                <Grid Padding="12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Button Command="{Binding RefreshModelsCommand}" Content="Refresh models" />
+                                    <Button Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Permissions" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="240" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Default permissions" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Choose how much Lucky may do without adding future tools" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding AccessLevels}" SelectedItem="{Binding SelectedAccessLevel, Mode=TwoWay}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Subagents" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Enable subagents" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Allow bounded child agents during a turn" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding SubagentsEnabled, Mode=TwoWay}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Auto-delegate" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Let Lucky delegate when parallel work helps" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding AutoDelegateEnabled, Mode=TwoWay}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="120" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Max parallel" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                                    <NumberBox Grid.Column="1" Value="{Binding MaxParallelSubagents, Mode=TwoWay}" Minimum="1" Maximum="12" SpinButtonPlacementMode="Compact" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="120" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Max per turn" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                                    <NumberBox Grid.Column="1" Value="{Binding MaxSubagentsPerTurn, Mode=TwoWay}" Minimum="0" Maximum="12" SpinButtonPlacementMode="Compact" />
+                                </Grid>
+                                <Grid Padding="12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text=".lucky\agents\*.json and LocalAppData\Lucky\agents\*.json" Style="{StaticResource MutedTextStyle}" />
+                                    <Button Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Personalization" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <Border Style="{StaticResource SettingsCardStyle}" Padding="12">
+                            <StackPanel Spacing="10">
+                                <TextBlock Text="Custom instructions" Foreground="{StaticResource TextBrush}" />
+                                <TextBox
+                                    Text="{Binding Persona, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                    PlaceholderText="Add Lucky's persona and standing instructions..."
+                                    AcceptsReturn="True"
+                                    TextWrapping="Wrap"
+                                    MinHeight="190" />
+                                <Button Command="{Binding SaveSettingsCommand}" HorizontalAlignment="Right" Content="Save" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Memory" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="Hermes-style split memory: USER profile facts stay compact, while MEMORY stores durable project/session notes." Style="{StaticResource MutedTextStyle}" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Enable memories" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Generate new memories from explicit and preference-like chats" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch Grid.Column="1" IsOn="True" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding UserProfileUsageLabel}" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Identity, preferences, and long-lived user facts" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Command="{Binding DisableSelectedMemoryCommand}" Content="Disable latest" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding MemoryUsageLabel}" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Project notes and durable conversation facts" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="SearXNG" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="240" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Search endpoint" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                                    <TextBox Grid.Column="1" Text="{Binding SearxngUrl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Auto web search" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding AutoWebSearch, Mode=TwoWay}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</Page>

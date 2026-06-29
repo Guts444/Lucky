@@ -1,0 +1,23 @@
+bin/
+obj/
+**/bin/
+**/obj/
+.vs/
+.vscode/
+TestResults/
+artifacts/
+*.user
+*.suo
+*.tmp
+*.log
+
+# Lucky local runtime state belongs under %LOCALAPPDATA%, not the repo.
+lucky-state.json
+*.db
+*.db-shm
+*.db-wal
+
+# Never commit provider credentials or local environment overrides.
+.env
+.env.*
+secrets.json
