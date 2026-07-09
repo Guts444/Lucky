@@ -7,6 +7,7 @@ Lucky is a Windows desktop LLM harness with a local-first core. The design separ
 - Local-first state: projects, sessions, settings, and memories live under the current user's local app data.
 - Provider flexibility: DeepSeek, LM Studio, and custom OpenAI-compatible servers share one provider interface.
 - User-controlled search: web lookup flows through a configured SearXNG endpoint.
+- Explicit external capabilities: trusted static page reading, MCP, and Docker sandbox execution are disabled until the user configures and enables them.
 - Project-scoped context: chats and memories can be tied to workspace folders.
 - Project-scoped action: file reads, searches, creates, and edits are exposed as bounded tools.
 - Bounded delegation: subagents can split isolated work while preserving local-first provider, access, and trace rules.
@@ -25,8 +26,13 @@ Lucky.Core
   CredentialProtector.cs      Current-user DPAPI secret protection
   ContextEstimator.cs         Fallback token/character estimates for UI meters
   OpenAiCompatibleClient.cs   /models and /chat/completions provider calls
-  ProjectFileToolService.cs   Safe project-scoped list/read/search/write/edit tools
+  ProjectFileToolService.cs   Safe project-scoped list/read/search/write/edit/patch tools
+  ProjectTerminalToolService.cs Bounded FullAccess Windows PowerShell command runner
+  DockerCodeExecutionSandboxService.cs Opt-in constrained local-Docker code runner
   SearxngSearchClient.cs      SearXNG JSON search client
+  WebPageReader.cs            Cookie-free trusted-domain static page reader
+  McpToolService.cs            Per-turn local stdio MCP client and tool bridge
+  CommandLineArgumentParser.cs Shell-free MCP argument parser for settings UI
   MemoryService.cs            Memory capture, merge, retrieval, and scoring
   AgentInstructionsService.cs AGENTS.md discovery for parent and child agents
   SubagentDefinitionService.cs Built-in, state-backed, and file-backed subagent definitions
@@ -51,7 +57,9 @@ Packaged WinUI runs can resolve that local app data location through the package
 
 The state graph contains:
 
-- `AppSettings`: persona, active provider, access level, selected project, SearXNG settings, context limits, and memory budgets.
+- `AppSettings`: persona, active provider, access level, selected project, SearXNG settings, trusted-page-reader settings, MCP settings, memory enablement, context limits, and memory budgets.
+- `WebBrowserSettings`: opt-in flag, trusted domains, and bounded page-text length.
+- `McpSettings`: opt-in flag, request/output limits, and a local list of `McpServerDefinition` values. Display names and enabled state are normal settings; each stdio command, argument list, and working directory is persisted as one current-user-DPAPI-protected launch configuration and restored only in memory for the current Windows user.
 - `SubagentSettings`: enablement, auto-delegation, per-turn and parallel caps, child tool-round caps, timeout, and state-backed custom agents.
 - `Projects`: known workspace folders.
 - `Sessions`: project-scoped chat sessions and messages.
@@ -101,10 +109,31 @@ It parses result title, URL, and snippet/content into `SearchResult`. `AgentRunn
 
 - The user starts a prompt with `/web`.
 - `AutoWebSearch` is enabled and the prompt looks current, for example latest, today, current, news, price, release, schedule, weather, verify, look up, or search for.
+- The parent model calls the `web_search` tool during the tool loop.
 
 Automatic search is skipped for offline artifact/build prompts, such as creating a standalone HTML file, canvas game, script, app, or website, even if the prompt contains words like current. Explicit `/web` still searches.
 
 Search failures become trace entries and do not fail the entire turn. If search succeeds but the model call fails, Lucky can still show the search results as a fallback.
+
+The system prompt tells the model that SearXNG is Lucky's web access path. Prefetched `/web` or automatic results are real web results for that turn, and `web_search` is the live search tool when the model needs a fresh query.
+
+## Trusted Page Reader
+
+`WebPageReader` provides the `web_open` tool only when all of these conditions are true:
+
+1. `WebBrowserSettings.Enabled` is true.
+2. At least one trusted domain is configured.
+3. The turn has `FullAccess`.
+
+It performs a cookie-free HTTP(S) GET with redirects disabled at the transport layer and handled manually. The initial URL and every redirect must match an exact trusted domain or a subdomain of one, use a default HTTP/HTTPS port, and resolve without loopback/private/link-local/reserved IP addresses. It rejects non-text content, caps downloads at 2 MiB, caps titles and model text, removes common non-readable HTML elements, and turns regex timeouts into visible tool errors. It is intentionally not an interactive browser: it does not reuse a logged-in browser session, run form actions, or carry cookies. Browser automation can instead be offered by an explicitly trusted MCP server.
+
+## MCP Tool Host
+
+`McpToolService` is a local stdio MCP client. When MCP is enabled during a `FullAccess` parent turn, `AgentRunner` opens a short-lived session for each enabled server, launches its DPAPI-restored configured command without a shell, sends `initialize` and `notifications/initialized`, walks paged `tools/list` results, then exposes the discovered tools to the model. Tool names are namespaced into safe, unique `mcp_*` function names. Nested MCP input schemas are preserved when their bounded size fits the provider request; otherwise Lucky falls back to the tool's bounded flat parameter description.
+
+MCP stdout protocol frames are capped at 256 KiB; an oversized frame terminates the configured server instead of being parsed. Stderr lines, cursors, tool names/descriptions/schemas, content-item counts, text, and structured result JSON are all bounded before model exposure. Each `tools/call` response is returned to the model as bounded text and optional structured JSON. Binary image/audio payloads are not inserted into the model context. MCP startup and call outcomes become visible trace entries. Servers are terminated when the turn finishes or is cancelled; caller cancellation is propagated rather than converted into an ordinary tool failure.
+
+This first host supports stdio tool servers and common protocol versions from `2024-11-05` through `2025-11-25`. It intentionally does not yet implement Streamable HTTP, OAuth, prompt/resource APIs, server-initiated requests, or subscriptions/tool-list-change notifications. MCP is parent-turn-only; subagents do not inherit MCP tools.
 
 ## Memory System
 
@@ -113,6 +142,8 @@ Search failures become trace entries and do not fail the entire turn. If search 
 - Capture: extract durable memories from explicit `/remember` prompts, "remember that" phrases, preferences, identity statements, and naming corrections.
 - Safety: skip messages that look like API keys, passwords, bearer tokens, secrets, or similar sensitive material.
 - Retrieval: score enabled memories against the current message and return the best matches.
+
+`AppSettings.MemoriesEnabled` gates both capture and retrieval. When memories are disabled, Lucky leaves existing memory items in local state but does not capture new memories or inject recalled memories into the model prompt.
 
 Captured memories are split into:
 
@@ -127,60 +158,65 @@ Retrieval currently uses token vectors and cosine similarity, with boosts for:
 - Confidence
 - Recency
 
-This is a lightweight semantic-memory layer rather than an embeddings store today. Future vector search should preserve the same `MemoryItem` contract unless a migration is needed.
+Retrieval also filters by scope before scoring: global memories are always eligible when memory is enabled, while project memories are eligible only when the current turn is allowed to use that project context.
 
-`ContextEstimator` provides approximate text-token counts for older turns and providers that do not report usage, plus character totals for the USER and MEMORY settings budgets. When provider token usage is available on assistant messages, the chat meter prefers the latest reported total instead of the local estimate.
+This is a lightweight durable-memory layer rather than an embeddings store today. Future vector search should preserve the same `MemoryItem` contract unless a migration is needed.
+
+`ContextEstimator` provides approximate text-token counts for older turns and providers that do not report usage, plus character totals for the USER and MEMORY settings budgets. When provider token usage is available on assistant messages, the chat meter prefers the latest reported total instead of the local estimate. Prompt assembly enforces `UserProfileCharLimit` and `MemoryCharLimit` separately when rendering recalled memory sections.
 
 ## Agent Turn Flow
 
 `AgentRunner.RunTurnAsync` coordinates a single user turn:
 
-1. Capture candidate memories from the user message.
-2. Merge captured memories into state, de-duplicating normalized summaries.
-3. Retrieve relevant memories for the selected project.
+1. Resolve the effective workspace context. In `ChatOnly`, the effective project is null even if a project is selected.
+2. If memories are enabled, capture candidate memories from the user message.
+3. If memories are enabled, merge captured memories into state and retrieve in-scope memories.
 4. Reject obvious project-changing prompts unless the access level is `FullAccess`.
-5. Load root project instructions from `AGENTS.override.md` or `AGENTS.md` when present.
-6. Load built-in, state-backed, profile-file, and project-file subagent definitions.
+5. Load root project instructions from `AGENTS.override.md` or `AGENTS.md` when the effective project is available.
+6. Load built-in, state-backed, profile-file, and project-file subagent definitions. Project-file definitions load only when the effective project is available.
 7. Optionally run SearXNG search and append trace entries.
 8. Resolve the active provider and unprotect its API key.
-9. Build available tools from the selected project, access level, and subagent settings.
-10. Build the model message list:
+9. In `FullAccess`, optionally open short-lived configured stdio MCP sessions and append startup trace entries.
+10. Build available tools from the effective project, access level, SearXNG/page-reader settings, discovered MCP tools, explicit sandbox settings, and subagent settings.
+11. Build the model message list:
    - Persona and access level
-   - Selected project name/path
-   - Project AGENTS instructions
-   - Available subagents and limits
-   - USER profile notes and relevant durable memories
+   - Selected project name/path when workspace context is allowed
+   - Project AGENTS instructions when workspace context is allowed
+   - Available subagents and limits, filtered by auto-activation unless the user explicitly asked for subagents
+   - USER profile notes and relevant durable memories within their configured prompt budgets
    - Search results
    - Recent user/assistant messages
    - Current user message
-11. Run a bounded tool loop:
+12. Run a bounded tool loop:
+   - compact older complete turns/tool exchanges and bound tool definitions before every provider call, reserving configured context for tool schemas and a completion
    - call the provider through `ILlmClient`, reporting streamed answer and reasoning deltas when available
    - execute requested tool calls if allowed
-   - run `subagent_run` calls in isolated child contexts, concurrently up to the configured cap
+   - run `subagent_run` calls in isolated child contexts, concurrently up to the configured cap; any child that can write, patch, or run PowerShell is serialized with other mutable children
    - append tool result messages
    - append visible trace entries
    - stop when the model returns final assistant text
-   - detect repeated successful tool calls and finalize without tools
+   - reject excess calls after 12 parent calls in one response (8 in a child) with a visible tool result, detect repeated successful calls, and finalize without tools
+   - finalize after three consecutive fully failed tool rounds
    - on the round cap, finalize without tools instead of returning only a safety-limit message
-12. Return assistant text, trace entries, recalled memories, captured memories, provider reasoning text, provider token usage, and whether a model was used.
+13. Dispose any MCP sessions and return assistant text, trace entries, recalled memories, captured memories, provider reasoning text, provider token usage, and whether a model was used.
 
 The system prompt includes a stable product style rule, separate from the user-editable persona, that asks for clean chat prose in Lucky's plain-text UI. The rule discourages decorative Markdown separators, routine heading hashes, excessive bold markers, and filler preambles while still allowing bullets or tables when they improve scanning.
 
 The UI should surface trace and setup failures clearly enough that users know whether an answer came from the model, search fallback, or a missing-provider-key path. Tool output shown in Thinking is summarized for readability; large `project.read_file` results show the path, character count, and a short preview rather than the entire file contents.
 
-The loop is capped so a provider cannot keep requesting tools indefinitely. Unknown tools, malformed arguments, denied access levels, unsafe paths, and filesystem failures become tool-result messages and trace entries rather than hidden crashes. Successful tool calls are tracked by normalized tool name and JSON arguments; if the provider asks for the same already-successful operation again, Lucky treats it as a loop signal and asks for a final answer with tools disabled.
+The parent loop is capped at 12 rounds, child loops at their configured 1–8 rounds, and each response is capped at 12 parent or 8 child tool calls. Before every provider/finalization call, Lucky rebudgets messages, tool-call payloads, tool outputs, and exposed schemas against the configured context. Unknown tools, malformed arguments, denied access levels, unsafe paths, and filesystem failures become tool-result messages and trace entries rather than hidden crashes. Three fully failed rounds force finalization. Successful tool calls are tracked by normalized tool name and JSON arguments; if the provider asks for the same already-successful operation again, Lucky treats it as a loop signal and asks for a final answer with tools disabled.
 
 ## Subagent Orchestration
 
 Lucky's subagent system keeps child work inside the same local-first harness boundaries as the parent turn.
 
-`SubagentDefinitionService` loads built-in agents (`explorer`, `reviewer`, `tester`, `writer`, and `worker`), then overlays custom state-backed agents, personal JSON files from `%LOCALAPPDATA%\Lucky\agents\*.json`, and project JSON files from `<project>\.lucky\agents\*.json`. Definitions include a name, description, instructions, tool allowlist, optional model and reasoning overrides, auto-activation flag, and access cap. Project definitions win when names collide with broader definitions.
+`SubagentDefinitionService` loads built-in agents (`explorer`, `reviewer`, `tester`, `writer`, and `worker`), then user-owned state-backed agents and personal JSON files from `%LOCALAPPDATA%\Lucky\agents\*.json`. Project JSON files from `<project>\.lucky\agents\*.json` are optional untrusted workspace content: the directory and files are reparse-point checked, project definitions cannot replace an existing built-in or user definition, and their effective policy is explicit-only read-only `Workspace` access. Definitions include a name, description, instructions, tool allowlist, optional model and reasoning overrides, auto-activation flag, and access cap.
 
-`AgentInstructionsService` reads only root project `AGENTS.override.md` or `AGENTS.md`, capped at 32 KiB and blocked on reparse points. The rendered instruction text is injected into the parent prompt and every child prompt so subagents follow the same project rules.
+When workspace context is available, `AgentInstructionsService` reads only root project `AGENTS.override.md` or `AGENTS.md`, capped at 32 KiB and blocked on reparse points. The rendered instruction text is injected into the parent prompt and every child prompt so subagents follow the same project rules.
 
-The parent model receives a `subagent_run` tool when subagents are enabled and either auto-delegation is enabled or the user explicitly asks for delegation. Each tool call names one agent and one self-contained task. If a provider returns multiple `subagent_run` calls in the same round, `AgentRunner` runs them concurrently through `SubagentCoordinator` up to `MaxParallelAgents`; `MaxAgentsPerTurn` caps total child runs for the turn.
+The parent model receives a `subagent_run` tool when subagents are enabled and the active catalog is non-empty. If auto-delegation is enabled and the user did not explicitly ask for subagents, the active catalog includes only definitions with `AutoActivate = true`. When the user explicitly asks for subagents or names agents, explicit-only definitions such as `worker` are included too. Each tool call names one agent and one self-contained task. If a provider returns multiple `subagent_run` calls in the same round, `AgentRunner` runs read-only children concurrently up to `MaxParallelAgents`; any child allowed to mutate the workspace is serialized. `MaxAgentsPerTurn` caps total child runs for the turn.
 
-Each child run uses `SubagentRunner`, which calls the same `ILlmClient` and `ProjectFileToolService` as the parent. Child agents inherit the active provider and API-key handling. A definition can request a model, reasoning effort, tools, or access cap, but the effective access is never higher than the parent turn's `HarnessAccessLevel`. Built-in agents use read/list/search tools only; custom agents may request write/edit tools, but those are available only when both the definition and parent turn allow `FullAccess`.
+Each child run uses `SubagentRunner`, which calls the same `ILlmClient`, `ProjectFileToolService`, and optional terminal service as the parent. Child agents inherit the active provider and API-key handling. A definition can request a model, reasoning effort, tools, or access cap, but the effective access is never higher than the parent turn's `HarnessAccessLevel`. Built-in and project-file agents use read/list/search tools only; user-owned custom agents may explicitly request write/edit/patch/PowerShell tools, but those are available only when both the definition and parent turn allow `FullAccess`.
 
 Subagent results return compact summaries to the parent as tool results. Child transcripts are not stored in chat history and are not captured as memory. Trace entries are prefixed as `subagent.<name>` and child tool traces are prefixed as `subagent.<name>.<tool>`, keeping the Thinking expander observable without dumping large intermediate output.
 
@@ -195,24 +231,41 @@ Available operations:
 - `project_search`: search project text files with a regex or plain query.
 - `project_write_file`: create or overwrite a UTF-8 text file inside the project.
 - `project_edit_file`: replace exactly one old-text occurrence inside a project file.
+- `project_apply_patch`: apply a text-only unified diff, including create, modify, or delete sections. Lucky validates every file and hunk before a commit; it can use a single unique nearby-context match for a stale hunk position, stages writes, and attempts rollback if a commit fails. Binary and rename patches are rejected.
+
+## Project Terminal Tool Service
+
+`ProjectTerminalToolService` implements `project_run_command` for parent turns at `FullAccess`. It starts `powershell.exe` from the verified project root using `-NoLogo`, `-NoProfile`, and `-NonInteractive`. Commands have a default 60-second timeout, accept only 1–300 seconds, capture up to 48 KiB each of stdout and stderr while continuing to drain both streams, and return the exit code plus elapsed time in a visible tool trace. On timeout or caller cancellation, Lucky requests process-tree termination and reports whether it confirmed the PowerShell host exit; detached child processes cannot be independently verified.
+
+The verified working directory prevents a path parameter from redirecting startup outside the workspace, but it is not a Windows security sandbox: a raw command still executes with the current user's permissions. The Full access selection and trace are therefore the product-level consent and observability boundary. It must never be described as the Docker sandbox below.
+
+## Docker Code Execution Sandbox
+
+`DockerCodeExecutionSandboxService` implements `sandbox_execute` only when the turn is `FullAccess`, the user has explicitly enabled the sandbox, and a non-empty image name is configured. It is not offered to subagents. The service requires Windows and forces Docker's local `npipe:////./pipe/docker_engine` endpoint; it clears Docker connection environment variables, rejects a remote `DOCKER_HOST`, and rejects a non-default `DOCKER_CONTEXT`. Before executing, it uses `docker image inspect --format '{{json .Config.Volumes}}'` to verify the image exists in the local cache and declares no Docker volumes, then invokes `docker run --pull=never`; Lucky does not pull, build, or update images automatically. Docker Desktop/client failures, remote-context configuration, missing local images, malformed volume metadata, and declared image volumes are returned as visible tool errors before a container run begins.
+
+The service invokes the Docker CLI through `ProcessStartInfo.ArgumentList`, never a host command shell. Each run uses a generated name and `--rm`, `--network=none`, `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges=true`, a non-root `65532:65532` user, CPU/memory/swap/PID/file-descriptor limits, fixed `/dev/shm`, and bounded tmpfs mounts. `/tmp` is non-executable; `/scratch` is a disposable in-container tmpfs work directory. The command is executed as `sh -lc` inside the chosen Linux image after forcing the image entrypoint to `sh`. There are no host mounts at all (including no project mount), device, privileged, host-PID, host-network, writable-host-volume, or forwarded-host-environment flags. Rejecting image-declared volumes prevents Docker from creating writable anonymous volume storage that would bypass the read-only-root and disposable-scratch contract.
+
+No host path is ever mounted. The former optional read-only project mount is retired because a filesystem reparse-point scan cannot remove bind-mount time-of-check/time-of-use risk; persisted legacy preferences are reset to false during state load. Timeout or cancellation attempts to stop the Docker CLI and requests `docker container rm --force <generated-name>` with an independent cleanup timeout; the visible result says when Docker does not confirm removal. Standard output and standard error are independently capped at 48 KiB.
+
+This is a constrained container boundary, not a guarantee of VM-grade isolation, secure deletion, or universal resource enforcement. Docker daemon configuration, Docker Desktop/host integration, the selected image, and platform support affect the result; operators should use trusted local images and understand Docker's own security model. In particular, the app does not claim that `project_run_command` is sandboxed.
 
 ## Project-Scoped Chats
 
 Projects are keyed by normalized folder path. `LuckyStore.EnsureProject` reuses an existing project when the same path is opened, updates `LastOpenedAt`, and sets it as selected. New projects receive an initial chat session.
 
-Sessions include `ProjectId`, title, timestamps, and messages. Memory capture receives the current project id and session id so later retrieval can prefer memories from the active workspace while still allowing global memories.
+Sessions include `ProjectId`, title, timestamps, and messages. Memory capture receives the effective project id and session id so later retrieval can prefer memories from the active workspace while still allowing global memories. In `ChatOnly`, the effective project id is null.
 
 ## Access Levels
 
 `HarnessAccessLevel` is stored in settings and injected into the system prompt.
 
-- `ChatOnly`: no implied workspace or external action access.
+- `ChatOnly`: no implied workspace or broad external action access. Lucky may use configured SearXNG search, but it does not inject selected project name/path, project root instructions, project-scoped memories, project file-backed subagents, project filesystem tools, trusted page reading, or MCP tools.
 - `Workspace`: selected project context can be supplied by Lucky, and read-only project filesystem tools are available.
-- `FullAccess`: project write/edit tools are available. Broader machine or shell access remains future work and should require clear UI affordances, confirmation for risky actions, and traceable tool results.
+- `FullAccess`: project write/edit/unified-patch tools and the explicit PowerShell command runner are available, along with explicitly enabled trusted-page-reader and stdio MCP tools. An explicitly configured local Docker sandbox can also be exposed as `sandbox_execute`; it is not delegated to subagents. MCP server commands and sandbox image names are user configuration, never model-provided. The PowerShell runner starts at the selected project root and is traceable but not OS-isolated; the Docker sandbox has the separate constrained-container and limitation contract above.
 
 Requests that clearly require project writes, such as creating an HTML file or editing code, are short-circuited in `ChatOnly` and `Workspace` with a user-facing Full access message. Read-only prompts still flow through the model with the read/list/search tools allowed by the selected access level.
 
-Subagents inherit the current access level and cannot escalate above it. In `ChatOnly`, Lucky may expose `subagent_run`, but child agents receive no project filesystem tools. In `Workspace`, child agents can receive read-only project tools. In `FullAccess`, custom child agents can receive write/edit tools only if their definition explicitly allows them.
+Subagents inherit the current access level and cannot escalate above it. In `ChatOnly`, Lucky may expose `subagent_run`, but child agents receive no project context or project filesystem tools. In `Workspace`, child agents can receive read-only project tools. In `FullAccess`, user-owned custom child agents can receive write/edit/patch/PowerShell tools only if their definition explicitly allows them; project-file children remain explicit, read-only helpers.
 
 Access levels are not a substitute for OS permissions. They are Lucky's product-level contract with the user and must be enforced by the app workflow as new tools are added.
 
@@ -225,4 +278,4 @@ Access levels are not a substitute for OS permissions. They are Lucky's product-
 
 ## Contributor Documentation Rule
 
-Any change that modifies user-visible behavior, state shape, provider configuration, SearXNG behavior, semantic memory, project-scoped chats, access levels, or architecture boundaries must update this document and `README.md` in the same change.
+Any change that modifies user-visible behavior, state shape, provider configuration, SearXNG behavior, durable memory, project-scoped chats, access levels, or architecture boundaries must update this document and `README.md` in the same change.

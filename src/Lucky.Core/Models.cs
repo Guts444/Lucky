@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Lucky.Core;
@@ -14,6 +15,11 @@ public enum HarnessAccessLevel
     ChatOnly,
     Workspace,
     FullAccess
+}
+
+public enum McpTransportKind
+{
+    Stdio
 }
 
 public enum ChatRole
@@ -48,12 +54,16 @@ public sealed class AppSettings
     public HarnessAccessLevel AccessLevel { get; set; } = HarnessAccessLevel.Workspace;
     public string? SelectedProjectId { get; set; }
     public bool AutoWebSearch { get; set; } = true;
+    public bool MemoriesEnabled { get; set; } = true;
     public string SearxngUrl { get; set; } = "http://127.0.0.1:8080";
     public int WebSearchMaxResults { get; set; } = 4;
     public int MemorySearchLimit { get; set; } = 6;
     public int ContextMessageLimit { get; set; } = 24;
     public int MemoryCharLimit { get; set; } = 2200;
     public int UserProfileCharLimit { get; set; } = 1375;
+    public WebBrowserSettings Browser { get; set; } = new();
+    public McpSettings Mcp { get; set; } = new();
+    public CodeExecutionSandboxSettings Sandbox { get; set; } = new();
     public SubagentSettings Subagents { get; set; } = new();
     public ProviderSettings DeepSeek { get; set; } = new()
     {
@@ -91,6 +101,98 @@ public sealed class AppSettings
         LlmProviderKind.LmStudio => LmStudio,
         _ => Custom
     };
+}
+
+public sealed class WebBrowserSettings
+{
+    // Browser access is intentionally opt-in. An empty domain list exposes no page-reader tool.
+    public bool Enabled { get; set; }
+    public List<string> AllowedDomains { get; set; } = [];
+    public int MaxPageChars { get; set; } = 12000;
+}
+
+public sealed class McpSettings
+{
+    // MCP servers can expose arbitrary capabilities, so they are opt-in and FullAccess-gated.
+    public bool Enabled { get; set; }
+    public int RequestTimeoutSeconds { get; set; } = 60;
+    public int MaxToolOutputChars { get; set; } = 16000;
+    public List<McpServerDefinition> Servers { get; set; } = [];
+}
+
+/// <summary>
+/// User-controlled policy for the Docker code-execution sandbox. Disabled and unconfigured by
+/// default: Lucky never pulls an image or silently converts host PowerShell into a sandbox.
+/// </summary>
+public sealed class CodeExecutionSandboxSettings
+{
+    public bool Enabled { get; set; }
+    public string Image { get; set; } = "";
+    // Legacy persisted field retained only so old state can migrate safely. The sandbox never
+    // mounts host paths and LuckyStore resets this to false during load.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool AllowReadOnlyProjectMount { get; set; }
+    public int TimeoutSeconds { get; set; } = 60;
+    public int MemoryMiB { get; set; } = 512;
+    public double CpuLimit { get; set; } = 1.0;
+    public int PidsLimit { get; set; } = 128;
+    public int ScratchMiB { get; set; } = 128;
+}
+
+public sealed class McpServerDefinition
+{
+    public string Id { get; set; } = IdFactory.NewId("mcp");
+    public string Name { get; set; } = "MCP server";
+    public McpTransportKind Transport { get; set; } = McpTransportKind.Stdio;
+
+    // The launch configuration can contain an API key or access token. Keep it in memory only
+    // while Lucky is running and persist the serialized payload through Windows DPAPI instead of
+    // writing individual command-line strings into lucky-state.json.
+    [JsonIgnore]
+    public string Command { get; set; } = "";
+
+    [JsonIgnore]
+    public List<string> Arguments { get; set; } = [];
+
+    [JsonIgnore]
+    public string? WorkingDirectory { get; set; }
+
+    public string? EncryptedLaunchConfiguration { get; set; }
+
+    // Backward-compatible read-only JSON aliases. Existing plain-text state is migrated into
+    // EncryptedLaunchConfiguration on its next save; new state never emits these properties.
+    [JsonPropertyName("Command")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LegacyCommand
+    {
+        get => null;
+        set => Command = value ?? "";
+    }
+
+    [JsonPropertyName("Arguments")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyArguments
+    {
+        get => null;
+        set => Arguments = value ?? [];
+    }
+
+    [JsonPropertyName("WorkingDirectory")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LegacyWorkingDirectory
+    {
+        get => null;
+        set => WorkingDirectory = value;
+    }
+
+    public bool Enabled { get; set; } = true;
+}
+
+public sealed class McpServerLaunchConfiguration
+{
+    public string Command { get; set; } = "";
+    public List<string> Arguments { get; set; } = [];
+    public string? WorkingDirectory { get; set; }
 }
 
 public sealed class SubagentSettings
@@ -200,7 +302,8 @@ public sealed record LlmToolDefinition(
     string Name,
     string Description,
     IReadOnlyDictionary<string, ToolParameterDefinition> Parameters,
-    IReadOnlyList<string> Required);
+    IReadOnlyList<string> Required,
+    JsonElement? InputSchema = null);
 
 public sealed record ToolParameterDefinition(string Type, string Description, bool Required = false);
 
@@ -240,6 +343,16 @@ public sealed record AgentInstructionSet(IReadOnlyList<AgentInstructionDocument>
         : string.Join(", ", Documents.Select(document => document.RelativePath));
 }
 
+public sealed record McpDiscoveredTool(
+    string ModelToolName,
+    string ServerId,
+    string ServerName,
+    string ToolName,
+    string Description,
+    IReadOnlyDictionary<string, ToolParameterDefinition> Parameters,
+    IReadOnlyList<string> Required,
+    JsonElement InputSchema);
+
 public sealed record SubagentRunResult(
     string AgentName,
     string Task,
@@ -256,4 +369,5 @@ internal static class IdFactory
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(LuckyState))]
 [JsonSerializable(typeof(SubagentDefinition))]
+[JsonSerializable(typeof(McpServerLaunchConfiguration))]
 internal sealed partial class LuckyJsonContext : JsonSerializerContext;

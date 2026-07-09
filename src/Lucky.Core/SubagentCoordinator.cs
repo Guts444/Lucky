@@ -7,13 +7,16 @@ public sealed class SubagentCoordinator
 {
     private readonly ILlmClient _llmClient;
     private readonly IProjectFileToolService _projectFileTools;
+    private readonly IProjectTerminalToolService _projectTerminalTools;
 
     public SubagentCoordinator(
         ILlmClient? llmClient = null,
-        IProjectFileToolService? projectFileTools = null)
+        IProjectFileToolService? projectFileTools = null,
+        IProjectTerminalToolService? projectTerminalTools = null)
     {
         _llmClient = llmClient ?? new OpenAiCompatibleClient();
         _projectFileTools = projectFileTools ?? new ProjectFileToolService();
+        _projectTerminalTools = projectTerminalTools ?? new ProjectTerminalToolService();
     }
 
     public async Task<SubagentRunResult> RunAsync(
@@ -25,7 +28,7 @@ public sealed class SubagentCoordinator
         AgentInstructionSet instructions,
         string agentName,
         string task,
-        string? context,
+        string? context = null,
         CancellationToken cancellationToken = default,
         IProgress<AgentProgressEvent>? progress = null)
     {
@@ -49,7 +52,7 @@ public sealed class SubagentCoordinator
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(settings.Subagents.AgentTimeoutSeconds, 15, 1800)));
 
-        var runner = new SubagentRunner(_llmClient, _projectFileTools);
+        var runner = new SubagentRunner(_llmClient, _projectFileTools, _projectTerminalTools);
         try
         {
             progress?.Report(new AgentProgressEvent("tool", $"Starting subagent {definition.Name}", task));
@@ -67,6 +70,10 @@ public sealed class SubagentCoordinator
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return Failure(definition.Name, task, $"Subagent timed out after {settings.Subagents.AgentTimeoutSeconds} seconds.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
         {
@@ -87,13 +94,20 @@ public sealed class SubagentCoordinator
 
 internal sealed class SubagentRunner
 {
+    private const int MaxToolCallsPerResponse = 8;
+
     private readonly ILlmClient _llmClient;
     private readonly IProjectFileToolService _projectFileTools;
+    private readonly IProjectTerminalToolService _projectTerminalTools;
 
-    public SubagentRunner(ILlmClient llmClient, IProjectFileToolService projectFileTools)
+    public SubagentRunner(
+        ILlmClient llmClient,
+        IProjectFileToolService projectFileTools,
+        IProjectTerminalToolService projectTerminalTools)
     {
         _llmClient = llmClient;
         _projectFileTools = projectFileTools;
+        _projectTerminalTools = projectTerminalTools;
     }
 
     public async Task<SubagentRunResult> RunAsync(
@@ -126,7 +140,7 @@ internal sealed class SubagentRunner
                 streamProgress: null).ConfigureAwait(false);
             aggregateUsage = AddUsage(aggregateUsage, response.Usage);
 
-            var toolCalls = response.ToolCalls ?? [];
+            var toolCalls = NormalizeToolCalls(response.ToolCalls, round);
             if (toolCalls.Count == 0)
             {
                 return new SubagentRunResult(
@@ -137,7 +151,8 @@ internal sealed class SubagentRunner
                     TokenUsage: aggregateUsage);
             }
 
-            var repeatedToolCall = toolCalls.FirstOrDefault(toolCall => successfulToolSignatures.Contains(ToolSignature(toolCall)));
+            var repeatedToolCall = toolCalls.Take(MaxToolCallsPerResponse).FirstOrDefault(toolCall =>
+                successfulToolSignatures.Contains(ToolSignature(toolCall)));
             if (repeatedToolCall is not null)
             {
                 trace.Add(new ToolTraceEntry(
@@ -161,10 +176,14 @@ internal sealed class SubagentRunner
             }
 
             messages.Add(new LlmChatMessage("assistant", response.Content, ToolCalls: toolCalls, ReasoningContent: response.ReasoningContent));
-            foreach (var toolCall in toolCalls)
+            for (var toolCallIndex = 0; toolCallIndex < toolCalls.Count; toolCallIndex++)
             {
-                var execution = await ExecuteToolCallAsync(settings.AccessLevel, project, definition, toolCall, cancellationToken)
-                    .ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                var toolCall = toolCalls[toolCallIndex];
+                var execution = toolCallIndex < MaxToolCallsPerResponse
+                    ? await ExecuteToolCallAsync(settings.AccessLevel, project, definition, toolCall, cancellationToken)
+                        .ConfigureAwait(false)
+                    : ToolCallLimitError(toolCall);
                 var completed = DateTimeOffset.UtcNow;
                 trace.Add(new ToolTraceEntry(
                     execution.Tool,
@@ -198,6 +217,40 @@ internal sealed class SubagentRunner
             trace,
             TokenUsage: aggregateUsage);
     }
+
+    private static IReadOnlyList<ToolCallRequest> NormalizeToolCalls(
+        IReadOnlyList<ToolCallRequest>? toolCalls,
+        int round)
+    {
+        if (toolCalls is null || toolCalls.Count == 0)
+        {
+            return [];
+        }
+
+        return toolCalls
+            .Select((toolCall, index) => string.IsNullOrWhiteSpace(toolCall.Id)
+                ? toolCall with { Id = $"lucky_subagent_tool_{round + 1}_{index + 1}" }
+                : toolCall)
+            .ToArray();
+    }
+
+    private static ToolExecutionResult ToolCallLimitError(ToolCallRequest toolCall) => new(
+        TraceToolName(toolCall.Name),
+        toolCall.ArgumentsJson,
+        $"Lucky accepts at most {MaxToolCallsPerResponse} tool calls in one subagent response. This call was not run; review the completed tool results and return a final summary.",
+        IsError: true);
+
+    private static string TraceToolName(string toolName) => toolName switch
+    {
+        "project_list_files" => "project.list_files",
+        "project_read_file" => "project.read_file",
+        "project_search" => "project.search",
+        "project_write_file" => "project.write_file",
+        "project_edit_file" => "project.edit_file",
+        "project_apply_patch" => "project.apply_patch",
+        "project_run_command" => "project.run_command",
+        _ => toolName
+    };
 
     private static ProviderSettings CopyProvider(ProviderSettings provider, SubagentDefinition definition)
     {
@@ -336,6 +389,31 @@ internal sealed class SubagentRunner
                 ["path", "oldText", "newText"]));
         }
 
+        if (allowed.Contains("project_apply_patch"))
+        {
+            tools.Add(new LlmToolDefinition(
+                "project_apply_patch",
+                "Apply a standard unified diff to text files inside the selected project. Validate all hunks first; use this for multi-line or multi-file edits.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["patch"] = new("string", "Complete unified diff beginning with --- and +++ file headers, followed by @@ hunks.", Required: true)
+                },
+                ["patch"]));
+        }
+
+        if (allowed.Contains("project_run_command"))
+        {
+            tools.Add(new LlmToolDefinition(
+                "project_run_command",
+                "Run a PowerShell command from the verified selected-project root. Use it for focused build, test, and diagnostic work only.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["command"] = new("string", "PowerShell command to run from the selected project root.", Required: true),
+                    ["timeoutSeconds"] = new("integer", "Optional timeout from 1 to 300 seconds; defaults to 60.")
+                },
+                ["command"]));
+        }
+
         return tools;
     }
 
@@ -388,6 +466,15 @@ internal sealed class SubagentRunner
                     RequiredStringArg(args, "oldText"),
                     RequiredStringArg(args, "newText"),
                     cancellationToken).ConfigureAwait(false),
+                "project_apply_patch" => await _projectFileTools.ApplyPatchAsync(
+                    project,
+                    RequiredStringArg(args, "patch"),
+                    cancellationToken).ConfigureAwait(false),
+                "project_run_command" => await _projectTerminalTools.RunCommandAsync(
+                    project,
+                    RequiredStringArg(args, "command"),
+                    NullableIntArg(args, "timeoutSeconds"),
+                    cancellationToken).ConfigureAwait(false),
                 _ => new ToolExecutionResult(toolCall.Name, toolCall.ArgumentsJson, "Unknown tool.", IsError: true)
             };
         }
@@ -405,7 +492,7 @@ internal sealed class SubagentRunner
             return effectiveAccess is HarnessAccessLevel.Workspace or HarnessAccessLevel.FullAccess;
         }
 
-        if (toolName is "project_write_file" or "project_edit_file")
+        if (toolName is "project_write_file" or "project_edit_file" or "project_apply_patch" or "project_run_command")
         {
             return effectiveAccess == HarnessAccessLevel.FullAccess;
         }
@@ -453,6 +540,26 @@ internal sealed class SubagentRunner
         return args.TryGetValue(name, out var value) && value.ValueKind == JsonValueKind.True ||
                args.TryGetValue(name, out value) && value.ValueKind == JsonValueKind.String &&
                bool.TryParse(value.GetString(), out var parsed) && parsed;
+    }
+
+    private static int? NullableIntArg(IReadOnlyDictionary<string, JsonElement> args, string name)
+    {
+        if (!args.TryGetValue(name, out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
+        {
+            return number;
+        }
+
+        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new InvalidOperationException($"{name} must be an integer.");
     }
 
     private static string ToolSignature(ToolCallRequest toolCall)

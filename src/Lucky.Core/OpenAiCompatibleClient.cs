@@ -371,14 +371,31 @@ public sealed class OpenAiCompatibleClient : ILlmClient
 
     private static object SerializeTool(LlmToolDefinition tool)
     {
-        var properties = tool.Parameters.ToDictionary(
-            pair => pair.Key,
-            pair => (object)new
+        object parameters;
+        if (tool.InputSchema is JsonElement inputSchema)
+        {
+            // MCP tools can have nested JSON Schema. Preserve it exactly instead of flattening it
+            // into Lucky's simpler built-in tool parameter representation.
+            parameters = inputSchema;
+        }
+        else
+        {
+            var properties = tool.Parameters.ToDictionary(
+                pair => pair.Key,
+                pair => (object)new
+                {
+                    type = pair.Value.Type,
+                    description = pair.Value.Description
+                },
+                StringComparer.Ordinal);
+            parameters = new
             {
-                type = pair.Value.Type,
-                description = pair.Value.Description
-            },
-            StringComparer.Ordinal);
+                type = "object",
+                properties,
+                required = tool.Required.ToArray(),
+                additionalProperties = false
+            };
+        }
 
         return new
         {
@@ -387,13 +404,7 @@ public sealed class OpenAiCompatibleClient : ILlmClient
             {
                 name = tool.Name,
                 description = tool.Description,
-                parameters = new
-                {
-                    type = "object",
-                    properties,
-                    required = tool.Required.ToArray(),
-                    additionalProperties = false
-                }
+                parameters
             }
         };
     }

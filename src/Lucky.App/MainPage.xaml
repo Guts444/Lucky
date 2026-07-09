@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <Page
     x:Class="Lucky_App.MainPage"
+    x:Name="RootPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:automation="using:Microsoft.UI.Xaml.Automation"
     Loaded="Page_Loaded"
     RequestedTheme="Dark"
     mc:Ignorable="d">
@@ -78,7 +80,10 @@
                     </Grid.RowDefinitions>
 
                     <StackPanel Spacing="6">
-                        <Button Command="{Binding NewChatCommand}" Style="{StaticResource RailButtonStyle}">
+                        <Button
+                            Command="{Binding NewChatCommand}"
+                            Style="{StaticResource RailButtonStyle}"
+                            automation:AutomationProperties.Name="New chat">
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <FontIcon Glyph="&#xE710;" FontSize="13" />
                                 <TextBlock Text="New chat" />
@@ -120,10 +125,11 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Text="History" Foreground="#8E8E8E" />
                                 <Button
-                                    Grid.Column="1"
-                                    Click="ChooseFolder_Click"
-                                    ToolTipService.ToolTip="Choose working folder"
-                                    Style="{StaticResource IconOnlyButtonStyle}">
+                                     Grid.Column="1"
+                                     Click="ChooseFolder_Click"
+                                     ToolTipService.ToolTip="Choose working folder"
+                                     automation:AutomationProperties.Name="Choose working folder"
+                                     Style="{StaticResource IconOnlyButtonStyle}">
                                     <FontIcon Glyph="&#xE8B7;" FontSize="14" />
                                 </Button>
                             </Grid>
@@ -161,6 +167,7 @@
                     <Button
                         Grid.Row="2"
                         Command="{Binding OpenSettingsCommand}"
+                        automation:AutomationProperties.Name="Open settings"
                         HorizontalAlignment="Stretch"
                         HorizontalContentAlignment="Stretch"
                         Background="Transparent"
@@ -344,12 +351,13 @@
                                 BorderThickness="0"
                                 Background="Transparent" />
                             <Grid Grid.Row="1" ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="Auto" />
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <ComboBox
                                     ItemsSource="{Binding AccessLevels}"
@@ -376,8 +384,18 @@
                                     MinWidth="210" />
                                 <Button
                                     Grid.Column="4"
-                                    Command="{Binding SendCommand}"
-                                    Style="{StaticResource IconOnlyButtonStyle}">
+                                     Command="{Binding StopCommand}"
+                                     IsEnabled="{Binding IsBusy}"
+                                     ToolTipService.ToolTip="Stop the current turn"
+                                     automation:AutomationProperties.Name="Stop the current turn"
+                                     Style="{StaticResource IconOnlyButtonStyle}">
+                                    <FontIcon Glyph="&#xE71A;" FontSize="15" />
+                                </Button>
+                                <Button
+                                     Grid.Column="5"
+                                     Command="{Binding SendCommand}"
+                                     automation:AutomationProperties.Name="Send message"
+                                     Style="{StaticResource IconOnlyButtonStyle}">
                                     <FontIcon Glyph="&#xE724;" FontSize="15" />
                                 </Button>
                             </Grid>
@@ -406,7 +424,10 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <StackPanel Spacing="8">
-                        <Button Command="{Binding BackToAppCommand}" Style="{StaticResource RailButtonStyle}">
+                        <Button
+                            Command="{Binding BackToAppCommand}"
+                            Style="{StaticResource RailButtonStyle}"
+                            automation:AutomationProperties.Name="Back to app">
                             <StackPanel Orientation="Horizontal" Spacing="10">
                                 <FontIcon Glyph="&#xE72B;" FontSize="13" />
                                 <TextBlock Text="Back to app" />
@@ -417,25 +438,41 @@
                     <ScrollViewer Grid.Row="1" Margin="0,14,0,0">
                         <StackPanel>
                             <TextBlock Text="Personal" Style="{StaticResource SectionLabelStyle}" />
-                            <Button Style="{StaticResource RailButtonStyle}">
+                            <Button
+                                Tag="General"
+                                Click="SettingsSection_Click"
+                                Style="{StaticResource RailButtonStyle}"
+                                automation:AutomationProperties.Name="Go to General settings">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <FontIcon Glyph="&#xE713;" FontSize="13" />
                                     <TextBlock Text="General" />
                                 </StackPanel>
                             </Button>
-                            <Button Style="{StaticResource RailButtonStyle}">
+                            <Button
+                                Tag="Personalization"
+                                Click="SettingsSection_Click"
+                                Style="{StaticResource RailButtonStyle}"
+                                automation:AutomationProperties.Name="Go to Personalization settings">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <FontIcon Glyph="&#xE7C3;" FontSize="13" />
                                     <TextBlock Text="Personalization" />
                                 </StackPanel>
                             </Button>
-                            <Button Style="{StaticResource RailButtonStyle}">
+                            <Button
+                                Tag="Model"
+                                Click="SettingsSection_Click"
+                                Style="{StaticResource RailButtonStyle}"
+                                automation:AutomationProperties.Name="Go to Model settings">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <FontIcon Glyph="&#xE8A5;" FontSize="13" />
                                     <TextBlock Text="Model" />
                                 </StackPanel>
                             </Button>
-                            <Button Style="{StaticResource RailButtonStyle}">
+                            <Button
+                                Tag="Memory"
+                                Click="SettingsSection_Click"
+                                Style="{StaticResource RailButtonStyle}"
+                                automation:AutomationProperties.Name="Go to Memory settings">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <FontIcon Glyph="&#xE8BD;" FontSize="13" />
                                     <TextBlock Text="Memory" />
@@ -443,7 +480,11 @@
                             </Button>
 
                             <TextBlock Text="Integrations" Style="{StaticResource SectionLabelStyle}" />
-                            <Button Style="{StaticResource RailButtonStyle}">
+                            <Button
+                                Tag="Searxng"
+                                Click="SettingsSection_Click"
+                                Style="{StaticResource RailButtonStyle}"
+                                automation:AutomationProperties.Name="Go to SearXNG settings">
                                 <StackPanel Orientation="Horizontal" Spacing="10">
                                     <FontIcon Glyph="&#xE774;" FontSize="13" />
                                     <TextBlock Text="SearXNG" />
@@ -460,9 +501,9 @@
                 </Grid>
             </Border>
 
-            <ScrollViewer Grid.Column="1" Background="{StaticResource CanvasBrush}" Padding="0,44,0,56">
-                <StackPanel Width="672" HorizontalAlignment="Center" Spacing="30">
-                    <TextBlock Text="General" Foreground="{StaticResource TextBrush}" FontSize="20" FontWeight="SemiBold" />
+            <ScrollViewer x:Name="SettingsScrollViewer" Grid.Column="1" Background="{StaticResource CanvasBrush}" Padding="0,44,0,56">
+                <StackPanel x:Name="SettingsContent" Width="672" HorizontalAlignment="Center" Spacing="30">
+                    <TextBlock x:Name="GeneralSettingsSection" Text="General" Foreground="{StaticResource TextBrush}" FontSize="20" FontWeight="SemiBold" />
 
                     <StackPanel Spacing="14">
                         <TextBlock Text="Work mode" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
@@ -506,7 +547,7 @@
                     </StackPanel>
 
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Model and reasoning" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock x:Name="ModelSettingsSection" Text="Model and reasoning" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel>
                                 <Grid Padding="12" ColumnSpacing="16">
@@ -643,7 +684,7 @@
                     </StackPanel>
 
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Personalization" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock x:Name="PersonalizationSettingsSection" Text="Personalization" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
                         <Border Style="{StaticResource SettingsCardStyle}" Padding="12">
                             <StackPanel Spacing="10">
                                 <TextBlock Text="Custom instructions" Foreground="{StaticResource TextBrush}" />
@@ -659,7 +700,7 @@
                     </StackPanel>
 
                     <StackPanel Spacing="10">
-                        <TextBlock Text="Memory" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock x:Name="MemorySettingsSection" Text="Memory" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
                         <TextBlock Text="Hermes-style split memory: USER profile facts stay compact, while MEMORY stores durable project/session notes." Style="{StaticResource MutedTextStyle}" />
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel>
@@ -672,7 +713,7 @@
                                         <TextBlock Text="Enable memories" Foreground="{StaticResource TextBrush}" />
                                         <TextBlock Text="Generate new memories from explicit and preference-like chats" Style="{StaticResource MutedTextStyle}" />
                                     </StackPanel>
-                                    <ToggleSwitch Grid.Column="1" IsOn="True" />
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding MemoriesEnabled, Mode=TwoWay}" />
                                 </Grid>
                                 <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
                                 <Grid Padding="12" ColumnSpacing="16">
@@ -698,7 +739,7 @@
                     </StackPanel>
 
                     <StackPanel Spacing="10">
-                        <TextBlock Text="SearXNG" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock x:Name="SearxngSettingsSection" Text="SearXNG" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel>
                                 <Grid Padding="12" ColumnSpacing="16">
@@ -717,6 +758,175 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="Auto web search" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
                                     <ToggleSwitch Grid.Column="1" IsOn="{Binding AutoWebSearch, Mode=TwoWay}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Trusted page reader" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="Lets Lucky read static text from only the domains you explicitly trust. It does not carry browser cookies, logins, or form interactions." Style="{StaticResource MutedTextStyle}" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Enable page reading" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Exposes the web_open tool only when at least one trusted domain is configured" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding BrowserEnabled, Mode=TwoWay}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="300" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Trusted domains" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Comma-separated, for example docs.microsoft.com, modelcontextprotocol.io" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <TextBox Grid.Column="1" Text="{Binding BrowserAllowedDomains, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="example.com, docs.example.com" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="MCP servers" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="MCP servers are opt-in local stdio processes. Lucky starts them only during a Full access turn, discovers their tools, shows each call in the trace, and stops them when the turn ends. Launch configuration is protected for this Windows user when saved." Style="{StaticResource MutedTextStyle}" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel Spacing="0">
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Enable MCP tools" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="MCP capabilities can be powerful; keep Full access deliberate" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding McpEnabled, Mode=TwoWay}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <StackPanel Padding="12" Spacing="8">
+                                    <TextBlock Text="Add a local stdio server" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="180" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Text="{Binding McpServerName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Display name" />
+                                        <TextBox Grid.Column="1" Text="{Binding McpServerCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Command, for example npx" />
+                                    </Grid>
+                                    <Grid ColumnSpacing="10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="180" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Text="{Binding McpServerArguments, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Arguments; quote paths with spaces" />
+                                        <TextBox Grid.Column="1" Text="{Binding McpServerWorkingDirectory, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Optional working folder" />
+                                    </Grid>
+                                    <Button Command="{Binding AddMcpServerCommand}" Content="Add server" HorizontalAlignment="Left" />
+                                </StackPanel>
+                                <ItemsControl ItemsSource="{Binding McpServers}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Padding="12" Spacing="5">
+                                                <Grid ColumnSpacing="12">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                                                        <TextBlock Text="{Binding Detail}" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1" Command="{Binding DataContext.RemoveMcpServerCommand, ElementName=RootPage}" CommandParameter="{Binding}" Content="Remove" />
+                                                </Grid>
+                                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="Code execution sandbox" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock Text="Optional Docker-only execution for disposable code checks. Lucky never pulls an image automatically, and this is separate from the unsandboxed Full access PowerShell runner." Style="{StaticResource MutedTextStyle}" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Enable Docker code sandbox" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Exposed only in Full access after you choose an already-local image" Style="{StaticResource MutedTextStyle}" />
+                                    </StackPanel>
+                                    <ToggleSwitch Grid.Column="1" IsOn="{Binding SandboxEnabled, Mode=TwoWay}" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="300" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel>
+                                        <TextBlock Text="Local Linux Docker image" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="For example local/lucky-sandbox:latest. Build or load it yourself; missing images fail without a pull." Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <TextBox Grid.Column="1" Text="{Binding SandboxImage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="local/lucky-sandbox:latest" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Max seconds" Foreground="{StaticResource TextBrush}" />
+                                        <NumberBox Value="{Binding SandboxTimeoutSeconds, Mode=TwoWay}" Minimum="5" Maximum="120" SpinButtonPlacementMode="Compact" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="4">
+                                        <TextBlock Text="Memory MiB" Foreground="{StaticResource TextBrush}" />
+                                        <NumberBox Value="{Binding SandboxMemoryMiB, Mode=TwoWay}" Minimum="64" Maximum="2048" SpinButtonPlacementMode="Compact" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Spacing="4">
+                                        <TextBlock Text="CPU cores" Foreground="{StaticResource TextBrush}" />
+                                        <NumberBox Value="{Binding SandboxCpuLimit, Mode=TwoWay}" Minimum="0.25" Maximum="2" SmallChange="0.25" SpinButtonPlacementMode="Compact" />
+                                    </StackPanel>
+                                </Grid>
+                                <Grid Padding="12,0,12,12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="PID limit" Foreground="{StaticResource TextBrush}" />
+                                        <NumberBox Value="{Binding SandboxPidsLimit, Mode=TwoWay}" Minimum="16" Maximum="256" SpinButtonPlacementMode="Compact" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="4">
+                                        <TextBlock Text="Scratch MiB" Foreground="{StaticResource TextBrush}" />
+                                        <NumberBox Value="{Binding SandboxScratchMiB, Mode=TwoWay}" Minimum="16" Maximum="512" SpinButtonPlacementMode="Compact" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" Text="No host folders are mounted. Network is disabled; root is read-only; capabilities are dropped; the process runs as a non-root UID." Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" VerticalAlignment="Bottom" />
+                                </Grid>
+                                <Grid Padding="12" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Docker Desktop's local Windows named pipe must be running. A container is removed after each run; timeout/cancel also requests forced removal." Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                    <Button Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save settings" />
                                 </Grid>
                             </StackPanel>
                         </Border>

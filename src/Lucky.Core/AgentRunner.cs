@@ -6,10 +6,16 @@ namespace Lucky.Core;
 
 public sealed class AgentRunner
 {
+    private const int MaxToolCallsPerResponse = 12;
+
     private readonly ILlmClient _llmClient;
     private readonly IWebSearchClient _webSearchClient;
     private readonly MemoryService _memoryService;
     private readonly IProjectFileToolService _projectFileTools;
+    private readonly IProjectTerminalToolService _projectTerminalTools;
+    private readonly IWebPageReader _webPageReader;
+    private readonly IMcpToolService _mcpToolService;
+    private readonly ICodeExecutionSandboxService _codeExecutionSandbox;
     private readonly AgentInstructionsService _instructionsService;
     private readonly SubagentDefinitionService _subagentDefinitions;
     private readonly SubagentCoordinator _subagentCoordinator;
@@ -21,15 +27,26 @@ public sealed class AgentRunner
         IProjectFileToolService? projectFileTools = null,
         AgentInstructionsService? instructionsService = null,
         SubagentDefinitionService? subagentDefinitions = null,
-        SubagentCoordinator? subagentCoordinator = null)
+        SubagentCoordinator? subagentCoordinator = null,
+        IProjectTerminalToolService? projectTerminalTools = null,
+        IWebPageReader? webPageReader = null,
+        IMcpToolService? mcpToolService = null,
+        ICodeExecutionSandboxService? codeExecutionSandbox = null)
     {
         _llmClient = llmClient ?? new OpenAiCompatibleClient();
         _webSearchClient = webSearchClient ?? new SearxngSearchClient();
         _memoryService = memoryService ?? new MemoryService();
         _projectFileTools = projectFileTools ?? new ProjectFileToolService();
+        _projectTerminalTools = projectTerminalTools ?? new ProjectTerminalToolService();
+        _webPageReader = webPageReader ?? new WebPageReader();
+        _mcpToolService = mcpToolService ?? new McpToolService();
+        _codeExecutionSandbox = codeExecutionSandbox ?? new DockerCodeExecutionSandboxService();
         _instructionsService = instructionsService ?? new AgentInstructionsService();
         _subagentDefinitions = subagentDefinitions ?? new SubagentDefinitionService();
-        _subagentCoordinator = subagentCoordinator ?? new SubagentCoordinator(_llmClient, _projectFileTools);
+        _subagentCoordinator = subagentCoordinator ?? new SubagentCoordinator(
+            _llmClient,
+            _projectFileTools,
+            _projectTerminalTools);
     }
 
     public async Task<AgentTurnResult> RunTurnAsync(
@@ -40,15 +57,23 @@ public sealed class AgentRunner
         CancellationToken cancellationToken = default,
         IProgress<AgentProgressEvent>? progress = null)
     {
-        progress?.Report(new AgentProgressEvent("memory", "Checking memory"));
-        var captured = _memoryService.CaptureFromUserMessage(userMessage, project?.Id, session.Id);
-        _memoryService.MergeCapturedMemories(state.Memories, captured);
+        var workspaceProject = state.Settings.AccessLevel == HarnessAccessLevel.ChatOnly ? null : project;
+        var explicitSubagentRequest = LooksLikeExplicitSubagentRequest(userMessage);
 
-        var recalled = _memoryService.RetrieveRelevant(
-            state.Memories,
-            userMessage,
-            project?.Id,
-            state.Settings.MemorySearchLimit);
+        IReadOnlyList<MemoryItem> captured = [];
+        IReadOnlyList<MemoryItem> recalled = [];
+        if (state.Settings.MemoriesEnabled)
+        {
+            progress?.Report(new AgentProgressEvent("memory", "Checking memory"));
+            captured = _memoryService.CaptureFromUserMessage(userMessage, workspaceProject?.Id, session.Id);
+            _memoryService.MergeCapturedMemories(state.Memories, captured);
+
+            recalled = _memoryService.RetrieveRelevant(
+                state.Memories,
+                userMessage,
+                workspaceProject?.Id,
+                state.Settings.MemorySearchLimit);
+        }
 
         var trace = new List<ToolTraceEntry>();
         if (state.Settings.AccessLevel != HarnessAccessLevel.FullAccess && LooksLikeProjectMutationRequest(userMessage))
@@ -62,16 +87,17 @@ public sealed class AgentRunner
         }
 
         progress?.Report(new AgentProgressEvent("instructions", "Reading project instructions"));
-        var instructions = await _instructionsService.LoadAsync(project, cancellationToken).ConfigureAwait(false);
+        var instructions = await _instructionsService.LoadAsync(workspaceProject, cancellationToken).ConfigureAwait(false);
         if (instructions.HasInstructions)
         {
             trace.Add(new ToolTraceEntry("instructions", instructions.SourceSummary, "Loaded project instructions."));
         }
 
-        var availableSubagents = await _subagentDefinitions.LoadAsync(state, project, cancellationToken).ConfigureAwait(false);
-        var subagentsAvailable = state.Settings.Subagents.Enabled &&
-                                 availableSubagents.Count > 0 &&
-                                 (state.Settings.Subagents.AutoDelegateEnabled || LooksLikeExplicitSubagentRequest(userMessage));
+        var availableSubagents = await _subagentDefinitions.LoadAsync(state, workspaceProject, cancellationToken).ConfigureAwait(false);
+        var activeSubagents = SelectActiveSubagents(
+            availableSubagents,
+            state.Settings.Subagents,
+            explicitSubagentRequest);
 
         var searchResults = await MaybeSearchAsync(state.Settings, userMessage, trace, cancellationToken, progress).ConfigureAwait(false);
         var provider = state.Settings.ActiveProviderSettings;
@@ -93,28 +119,43 @@ public sealed class AgentRunner
             return new AgentTurnResult(RenderSearchOnly(searchResults), trace, recalled, captured, UsedModel: false);
         }
 
+        IMcpToolSession? mcpSession = null;
         try
         {
-            IReadOnlyList<SubagentDefinition> activeSubagents = subagentsAvailable
-                ? availableSubagents
-                : Array.Empty<SubagentDefinition>();
+            if (state.Settings.AccessLevel == HarnessAccessLevel.FullAccess && state.Settings.Mcp.Enabled)
+            {
+                progress?.Report(new AgentProgressEvent("mcp", "Connecting MCP servers"));
+                mcpSession = await _mcpToolService
+                    .OpenSessionAsync(state.Settings.Mcp, cancellationToken)
+                    .ConfigureAwait(false);
+                foreach (var startupTrace in mcpSession.StartupTrace)
+                {
+                    trace.Add(startupTrace);
+                }
+            }
+
             var messages = BuildMessages(
                 state,
-                project,
+                workspaceProject,
                 session,
                 userMessage,
                 recalled,
                 searchResults,
                 instructions,
                 activeSubagents);
-            var tools = BuildToolDefinitions(state.Settings, project, activeSubagents);
+            var tools = BuildToolDefinitions(
+                state.Settings,
+                workspaceProject,
+                activeSubagents,
+                mcpSession?.Tools ?? []);
             var response = await RunToolLoopAsync(
                 state.Settings,
-                project,
+                workspaceProject,
                 provider,
                 apiKey,
                 messages,
                 tools,
+                mcpSession,
                 activeSubagents,
                 instructions,
                 trace,
@@ -140,6 +181,10 @@ public sealed class AgentRunner
                 response.ReasoningContent,
                 response.Usage);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
             var fallback = new StringBuilder();
@@ -151,6 +196,20 @@ public sealed class AgentRunner
             }
 
             return new AgentTurnResult(fallback.ToString().Trim(), trace, recalled, captured, UsedModel: false);
+        }
+        finally
+        {
+            if (mcpSession is not null)
+            {
+                try
+                {
+                    await mcpSession.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException)
+                {
+                    trace.Add(new ToolTraceEntry("mcp.disconnect", "MCP servers", ex.Message, IsError: true));
+                }
+            }
         }
     }
 
@@ -189,6 +248,10 @@ public sealed class AgentRunner
             trace.Add(new ToolTraceEntry("web.search", query, $"{results.Count} result(s) from SearXNG."));
             return results;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
             trace.Add(new ToolTraceEntry("web.search", query, ex.Message, IsError: true));
@@ -203,19 +266,34 @@ public sealed class AgentRunner
         string? apiKey,
         List<LlmChatMessage> messages,
         IReadOnlyList<LlmToolDefinition> tools,
+        IMcpToolSession? mcpSession,
         IReadOnlyList<SubagentDefinition> subagentDefinitions,
         AgentInstructionSet instructions,
         ICollection<ToolTraceEntry> trace,
         IProgress<AgentProgressEvent>? progress,
         CancellationToken cancellationToken)
     {
-        const int maxToolRounds = 8;
+        const int maxToolRounds = 12;
         LlmTokenUsage? aggregateUsage = null;
         var reasoningBlocks = new List<string>();
         var successfulToolSignatures = new HashSet<string>(StringComparer.Ordinal);
+        var workspaceRevision = 0;
+        var consecutiveFailedToolRounds = 0;
         var subagentBudget = new SubagentTurnBudget(Math.Clamp(settings.Subagents.MaxAgentsPerTurn, 0, 12));
+        var contextBoundToolCount = BoundToolDefinitionsForModel(
+            tools,
+            InputTokenBudget(provider.ContextWindowTokens) / 3).Count;
+        if (contextBoundToolCount < tools.Count)
+        {
+            trace.Add(new ToolTraceEntry(
+                "agent.context",
+                "tool schemas",
+                $"Exposed {contextBoundToolCount} of {tools.Count} tools for this turn so the provider request stays within its configured context budget."));
+        }
+
         for (var round = 0; round < maxToolRounds; round++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             progress?.Report(new AgentProgressEvent("thinking", round == 0 ? "Thinking" : "Thinking with tool results"));
             var streamProgress = progress is null
                 ? null
@@ -231,11 +309,12 @@ public sealed class AgentRunner
                         progress.Report(new AgentProgressEvent("reasoning", "Thinking", delta.ReasoningDelta));
                     }
                 });
+            var request = PrepareModelRequest(messages, tools, provider.ContextWindowTokens);
             var response = await _llmClient.CompleteChatAsync(
                 provider,
                 apiKey,
-                messages,
-                tools,
+                request.Messages,
+                request.Tools,
                 cancellationToken,
                 streamProgress).ConfigureAwait(false);
             aggregateUsage = AddUsage(aggregateUsage, response.Usage);
@@ -244,7 +323,7 @@ public sealed class AgentRunner
                 reasoningBlocks.Add(response.ReasoningContent.Trim());
             }
 
-            var toolCalls = response.ToolCalls ?? [];
+            var toolCalls = NormalizeToolCalls(response.ToolCalls, round);
             if (toolCalls.Count == 0)
             {
                 return response with
@@ -254,7 +333,8 @@ public sealed class AgentRunner
                 };
             }
 
-            var repeatedToolCall = toolCalls.FirstOrDefault(toolCall => successfulToolSignatures.Contains(ToolSignature(toolCall)));
+            var repeatedToolCall = toolCalls.Take(MaxToolCallsPerResponse).FirstOrDefault(toolCall =>
+                successfulToolSignatures.Contains(ToolLoopSignature(toolCall, workspaceRevision)));
             if (repeatedToolCall is not null)
             {
                 trace.Add(new ToolTraceEntry(
@@ -280,6 +360,8 @@ public sealed class AgentRunner
                 provider,
                 apiKey,
                 toolCalls,
+                MaxToolCallsPerResponse,
+                mcpSession,
                 subagentDefinitions,
                 instructions,
                 subagentBudget,
@@ -294,19 +376,53 @@ public sealed class AgentRunner
                 }
 
                 var execution = bundle.Execution;
-                var completed = DateTimeOffset.UtcNow;
+                var completed = bundle.CompletedAt ?? DateTimeOffset.UtcNow;
                 trace.Add(new ToolTraceEntry(
                     execution.Tool,
                     execution.Input,
                     execution.Output,
                     execution.IsError,
-                    StartedAt: completed,
+                    StartedAt: bundle.StartedAt ?? completed,
                     CompletedAt: completed));
-                messages.Add(new LlmChatMessage("tool", execution.Output, ToolCallId: bundle.ToolCall.Id));
+                messages.Add(new LlmChatMessage(
+                    "tool",
+                    BoundToolOutputForModel(execution.Output, provider.ContextWindowTokens),
+                    ToolCallId: bundle.ToolCall.Id));
                 if (!execution.IsError)
                 {
-                    successfulToolSignatures.Add(ToolSignature(bundle.ToolCall));
+                    if (ChangesWorkspace(execution.Tool))
+                    {
+                        workspaceRevision++;
+                    }
+
+                    successfulToolSignatures.Add(ToolLoopSignature(bundle.ToolCall, workspaceRevision));
                 }
+            }
+
+            if (executions.Count > 0 && executions.All(bundle => bundle.Execution.IsError))
+            {
+                consecutiveFailedToolRounds++;
+                if (consecutiveFailedToolRounds >= 3)
+                {
+                    trace.Add(new ToolTraceEntry(
+                        "agent.loop",
+                        "tool errors",
+                        "Three consecutive tool rounds failed; asking the model to summarize the completed work instead of continuing the same failing approach."));
+                    return await FinalizeToolLoopAsync(
+                        provider,
+                        apiKey,
+                        messages,
+                        trace,
+                        aggregateUsage,
+                        reasoningBlocks,
+                        "Three consecutive tool rounds failed.",
+                        maxToolRounds,
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                consecutiveFailedToolRounds = 0;
             }
         }
 
@@ -340,11 +456,15 @@ public sealed class AgentRunner
             var finalMessages = messages
                 .Append(new LlmChatMessage("system", finalizationPrompt))
                 .ToArray();
+            var finalRequest = PrepareModelRequest(
+                finalMessages,
+                tools: null,
+                contextWindowTokens: provider.ContextWindowTokens);
             var finalResponse = await _llmClient.CompleteChatAsync(
                 provider,
                 apiKey,
-                finalMessages,
-                tools: null,
+                finalRequest.Messages,
+                finalRequest.Tools,
                 cancellationToken,
                 streamProgress: null).ConfigureAwait(false);
             aggregateUsage = AddUsage(aggregateUsage, finalResponse.Usage);
@@ -361,6 +481,10 @@ public sealed class AgentRunner
                 ReasoningContent = JoinReasoningBlocks(reasoningBlocks),
                 Usage = aggregateUsage
             };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
@@ -446,6 +570,282 @@ public sealed class AgentRunner
         return $"{toolCall.Name}:{NormalizeJson(toolCall.ArgumentsJson)}";
     }
 
+    private static IReadOnlyList<ToolCallRequest> NormalizeToolCalls(
+        IReadOnlyList<ToolCallRequest>? toolCalls,
+        int round)
+    {
+        if (toolCalls is null || toolCalls.Count == 0)
+        {
+            return [];
+        }
+
+        return toolCalls
+            .Select((toolCall, index) => string.IsNullOrWhiteSpace(toolCall.Id)
+                ? toolCall with { Id = $"lucky_tool_{round + 1}_{index + 1}" }
+                : toolCall)
+            .ToArray();
+    }
+
+    private static string ToolLoopSignature(ToolCallRequest toolCall, int workspaceRevision)
+    {
+        var signature = ToolSignature(toolCall);
+        return toolCall.Name is "project_list_files" or "project_read_file" or "project_search" or "project_run_command"
+            ? $"workspace-{workspaceRevision}:{signature}"
+            : signature;
+    }
+
+    private static bool ChangesWorkspace(string executionTool) => executionTool is
+        "project.write_file" or
+        "project.edit_file" or
+        "project.apply_patch" or
+        "project.run_command";
+
+    private static string BoundToolOutputForModel(string output, int contextWindowTokens)
+    {
+        var maxCharacters = Math.Clamp(Math.Max(512, contextWindowTokens / 2), 512, 8000);
+        return BoundTextForModel(
+            output,
+            maxCharacters,
+            "\n\n[... Lucky truncated this tool output for context safety; the visible trace retains the result summary ...]\n\n");
+    }
+
+    private static PreparedModelRequest PrepareModelRequest(
+        IReadOnlyList<LlmChatMessage> messages,
+        IReadOnlyList<LlmToolDefinition>? tools,
+        int contextWindowTokens)
+    {
+        var inputBudget = InputTokenBudget(contextWindowTokens);
+        var preparedTools = tools is null
+            ? null
+            : BoundToolDefinitionsForModel(tools, inputBudget / 3);
+        var toolTokens = preparedTools?.Sum(EstimateToolTokens) ?? 0;
+        var messageBudget = Math.Max(128, inputBudget - toolTokens);
+        return new PreparedModelRequest(
+            CompactMessagesForModel(messages, messageBudget),
+            preparedTools);
+    }
+
+    private static IReadOnlyList<LlmToolDefinition> BoundToolDefinitionsForModel(
+        IReadOnlyList<LlmToolDefinition> tools,
+        int budgetTokens)
+    {
+        var remaining = Math.Max(128, budgetTokens);
+        var bounded = new List<LlmToolDefinition>();
+        foreach (var tool in tools)
+        {
+            var candidate = CompactToolDefinition(tool, Math.Min(4096, Math.Max(512, remaining * 4)));
+            var estimate = EstimateToolTokens(candidate);
+            if (estimate > remaining)
+            {
+                candidate = CompactToolDefinition(tool, Math.Min(1024, Math.Max(256, remaining * 4 / 2)), forceFlatSchema: true);
+                estimate = EstimateToolTokens(candidate);
+            }
+
+            if (estimate > remaining && bounded.Count > 0)
+            {
+                continue;
+            }
+
+            // Preserve at least one function definition even for a very small configured context.
+            // The request-message compactor reserves the rest of the input budget around it.
+            bounded.Add(candidate);
+            remaining = Math.Max(0, remaining - estimate);
+            if (remaining <= 0)
+            {
+                break;
+            }
+        }
+
+        return bounded;
+    }
+
+    private static LlmToolDefinition CompactToolDefinition(
+        LlmToolDefinition tool,
+        int maximumCharacters,
+        bool forceFlatSchema = false)
+    {
+        var description = BoundTextForModel(
+            tool.Description,
+            Math.Clamp(maximumCharacters / 3, 160, 1200),
+            "\n[tool description truncated by Lucky]");
+        var parameterLimit = Math.Clamp(maximumCharacters / 120, 1, 48);
+        var parameters = tool.Parameters
+            .OrderByDescending(entry => entry.Value.Required)
+            .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+            .Take(parameterLimit)
+            .ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value with
+                {
+                    Description = BoundTextForModel(
+                        entry.Value.Description,
+                        Math.Clamp(maximumCharacters / Math.Max(2, parameterLimit), 80, 480),
+                        " [parameter description truncated by Lucky]")
+                },
+                StringComparer.Ordinal);
+        var required = tool.Required.Where(parameters.ContainsKey).ToArray();
+        JsonElement? inputSchema = null;
+        if (!forceFlatSchema && tool.InputSchema is JsonElement schema)
+        {
+            var raw = schema.GetRawText();
+            if (raw.Length <= Math.Clamp(maximumCharacters / 2, 256, 4096))
+            {
+                inputSchema = schema;
+            }
+        }
+
+        return new LlmToolDefinition(tool.Name, description, parameters, required, inputSchema);
+    }
+
+    private static int EstimateToolTokens(LlmToolDefinition tool)
+    {
+        var characters = tool.Name.Length + tool.Description.Length + 24;
+        characters += tool.Parameters.Sum(parameter =>
+            parameter.Key.Length + parameter.Value.Type.Length + parameter.Value.Description.Length + 16);
+        characters += tool.Required.Sum(required => required.Length + 4);
+        if (tool.InputSchema is JsonElement schema)
+        {
+            characters += schema.GetRawText().Length;
+        }
+
+        return EstimateTokensForCharacterCount(characters);
+    }
+
+    private static IReadOnlyList<LlmChatMessage> CompactMessagesForModel(
+        IReadOnlyList<LlmChatMessage> source,
+        int budgetTokens)
+    {
+        var messages = source.Select(CloneMessageForModel).ToList();
+        while (EstimateMessagesTokens(messages) > budgetTokens && DropOldestCompleteTurn(messages))
+        {
+            // Keep the latest user turn and its most recent tool context whenever possible.
+        }
+
+        if (EstimateMessagesTokens(messages) > budgetTokens)
+        {
+            for (var index = 0; index < messages.Count; index++)
+            {
+                if (messages[index].Role == "tool")
+                {
+                    messages[index] = messages[index] with
+                    {
+                        Content = BoundTextForModel(
+                            messages[index].Content,
+                            384,
+                            "\n[tool result compacted by Lucky]")
+                    };
+                }
+                else if (messages[index].ToolCalls is { Count: > 0 })
+                {
+                    messages[index] = messages[index] with
+                    {
+                        ToolCalls = messages[index].ToolCalls!
+                            .Select(call => call.ArgumentsJson.Length <= 512
+                                ? call
+                                : call with { ArgumentsJson = "{\"_lucky_compacted\":true}" })
+                            .ToArray(),
+                        ReasoningContent = string.IsNullOrWhiteSpace(messages[index].ReasoningContent)
+                            ? messages[index].ReasoningContent
+                            : BoundTextForModel(messages[index].ReasoningContent!, 384, "\n[reasoning compacted by Lucky]")
+                    };
+                }
+            }
+        }
+
+        if (EstimateMessagesTokens(messages) > budgetTokens)
+        {
+            var contentBudget = Math.Max(256, budgetTokens * 4 - messages.Count * 48);
+            var latestUserIndex = messages.FindLastIndex(message => message.Role == "user");
+            var totalWeight = messages
+                .Select((message, index) => index == latestUserIndex ? 4 : message.Role == "system" ? 3 : 1)
+                .Sum();
+            for (var index = 0; index < messages.Count; index++)
+            {
+                var weight = index == latestUserIndex ? 4 : messages[index].Role == "system" ? 3 : 1;
+                var limit = Math.Max(96, contentBudget * weight / Math.Max(1, totalWeight));
+                messages[index] = messages[index] with
+                {
+                    Content = BoundTextForModel(
+                        messages[index].Content,
+                        limit,
+                        messages[index].Role == "system"
+                            ? "\n[... Lucky truncated older system context to stay within the configured model context window ...]\n"
+                            : "\n[message compacted by Lucky to fit the configured context]")
+                };
+            }
+        }
+
+        return messages;
+    }
+
+    private static LlmChatMessage CloneMessageForModel(LlmChatMessage message) => message with
+    {
+        ToolCalls = message.ToolCalls?.Select(call => call with { }).ToArray()
+    };
+
+    private static bool DropOldestCompleteTurn(IList<LlmChatMessage> messages)
+    {
+        var firstTurn = messages
+            .Select((message, index) => (message, index))
+            .FirstOrDefault(entry => entry.message.Role != "system");
+        if (firstTurn.message is null ||
+            (firstTurn.message.Role == "user" && messages.Count(message => message.Role == "user") <= 1))
+        {
+            return false;
+        }
+
+        var nextUser = -1;
+        for (var index = firstTurn.index + 1; index < messages.Count; index++)
+        {
+            if (messages[index].Role == "user")
+            {
+                nextUser = index;
+                break;
+            }
+        }
+
+        var count = nextUser < 0 ? messages.Count - firstTurn.index : nextUser - firstTurn.index;
+        if (count <= 0)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < count; index++)
+        {
+            messages.RemoveAt(firstTurn.index);
+        }
+
+        return true;
+    }
+
+    private static int EstimateMessagesTokens(IEnumerable<LlmChatMessage> messages) => messages.Sum(message =>
+    {
+        var characters = message.Content.Length + message.Role.Length + (message.ToolCallId?.Length ?? 0) + (message.ReasoningContent?.Length ?? 0) + 16;
+        characters += message.ToolCalls?.Sum(call => call.Id.Length + call.Name.Length + call.ArgumentsJson.Length + 12) ?? 0;
+        return EstimateTokensForCharacterCount(characters);
+    });
+
+    private static int EstimateTokensForCharacterCount(int characters) => characters <= 0
+        ? 0
+        : Math.Max(1, (int)Math.Ceiling(characters / 4.0));
+
+    private sealed record PreparedModelRequest(
+        IReadOnlyList<LlmChatMessage> Messages,
+        IReadOnlyList<LlmToolDefinition>? Tools);
+
+    private static string BoundTextForModel(string text, int maxCharacters, string marker)
+    {
+        if (text.Length <= maxCharacters)
+        {
+            return text;
+        }
+
+        var remaining = Math.Max(0, maxCharacters - marker.Length);
+        var headLength = remaining * 2 / 3;
+        var tailLength = remaining - headLength;
+        return text[..headLength] + marker + text[(text.Length - tailLength)..];
+    }
+
     private static string NormalizeJson(string json)
     {
         if (string.IsNullOrWhiteSpace(json))
@@ -473,7 +873,7 @@ public sealed class AgentRunner
     {
         foreach (var entry in trace.Where(entry => !entry.IsError))
         {
-            if (entry.Tool is "project.write_file" or "project.edit_file")
+            if (entry.Tool is "project.write_file" or "project.edit_file" or "project.apply_patch")
             {
                 yield return entry.Output;
             }
@@ -486,6 +886,8 @@ public sealed class AgentRunner
         ProviderSettings provider,
         string? apiKey,
         IReadOnlyList<ToolCallRequest> toolCalls,
+        int maxToolCallsPerResponse,
+        IMcpToolSession? mcpSession,
         IReadOnlyList<SubagentDefinition> subagentDefinitions,
         AgentInstructionSet instructions,
         SubagentTurnBudget subagentBudget,
@@ -495,10 +897,24 @@ public sealed class AgentRunner
         var results = new ToolExecutionBundle[toolCalls.Count];
         var subagentTasks = new List<Task>();
         using var semaphore = new SemaphoreSlim(Math.Clamp(settings.Subagents.MaxParallelAgents, 1, 12));
+        using var subagentMutationGate = new SemaphoreSlim(1, 1);
 
         for (var index = 0; index < toolCalls.Count; index++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var toolCall = toolCalls[index];
+            if (index >= maxToolCallsPerResponse)
+            {
+                results[index] = new ToolExecutionBundle(
+                    toolCall,
+                    ToolCallLimitError(toolCall, maxToolCallsPerResponse),
+                    [],
+                    null,
+                    StartedAt: DateTimeOffset.UtcNow,
+                    CompletedAt: DateTimeOffset.UtcNow);
+                continue;
+            }
+
             if (toolCall.Name == "subagent_run")
             {
                 if (!subagentBudget.TryConsume())
@@ -512,12 +928,26 @@ public sealed class AgentRunner
                 }
 
                 var capturedIndex = index;
+                var requiresMutationGate = SubagentCanMutateWorkspace(
+                    settings.AccessLevel,
+                    subagentDefinitions,
+                    toolCall);
                 subagentTasks.Add(Task.Run(async () =>
                 {
-                    await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    var mutationGateHeld = false;
+                    var concurrencyGateHeld = false;
                     try
                     {
-                        results[capturedIndex] = await ExecuteSubagentToolCallAsync(
+                        if (requiresMutationGate)
+                        {
+                            await subagentMutationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                            mutationGateHeld = true;
+                        }
+
+                        await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                        concurrencyGateHeld = true;
+                        var started = DateTimeOffset.UtcNow;
+                        var bundle = await ExecuteSubagentToolCallAsync(
                             settings,
                             project,
                             provider,
@@ -527,27 +957,92 @@ public sealed class AgentRunner
                             instructions,
                             progress,
                             cancellationToken).ConfigureAwait(false);
+                        results[capturedIndex] = bundle with
+                        {
+                            StartedAt = started,
+                            CompletedAt = DateTimeOffset.UtcNow
+                        };
                     }
                     finally
                     {
-                        semaphore.Release();
+                        if (concurrencyGateHeld)
+                        {
+                            semaphore.Release();
+                        }
+
+                        if (mutationGateHeld)
+                        {
+                            subagentMutationGate.Release();
+                        }
                     }
                 }, cancellationToken));
                 continue;
             }
 
+            var started = DateTimeOffset.UtcNow;
             var execution = await ExecuteToolCallAsync(
                 settings,
                 project,
                 toolCall,
+                mcpSession,
                 progress,
                 cancellationToken).ConfigureAwait(false);
-            results[index] = new ToolExecutionBundle(toolCall, execution, [], null);
+            results[index] = new ToolExecutionBundle(
+                toolCall,
+                execution,
+                [],
+                null,
+                StartedAt: started,
+                CompletedAt: DateTimeOffset.UtcNow);
         }
 
         await Task.WhenAll(subagentTasks).ConfigureAwait(false);
         return results;
     }
+
+    private static ToolExecutionResult ToolCallLimitError(ToolCallRequest toolCall, int limit) => new(
+        TraceToolName(toolCall.Name),
+        toolCall.ArgumentsJson,
+        $"Lucky accepts at most {limit} tool calls in one model response. This call was not run; review the completed tool results and return a final answer or send a focused follow-up.",
+        IsError: true);
+
+    private static string TraceToolName(string toolName) => toolName switch
+    {
+        "project_list_files" => "project.list_files",
+        "project_read_file" => "project.read_file",
+        "project_search" => "project.search",
+        "project_write_file" => "project.write_file",
+        "project_edit_file" => "project.edit_file",
+        "project_apply_patch" => "project.apply_patch",
+        "project_run_command" => "project.run_command",
+        "sandbox_execute" => "sandbox.execute",
+        "web_open" => "web.open",
+        "subagent_run" => "subagent",
+        _ => toolName
+    };
+
+    private static bool SubagentCanMutateWorkspace(
+        HarnessAccessLevel parentAccessLevel,
+        IReadOnlyList<SubagentDefinition> definitions,
+        ToolCallRequest toolCall)
+    {
+        if (parentAccessLevel != HarnessAccessLevel.FullAccess)
+        {
+            return false;
+        }
+
+        var agentName = StringArg(ParseToolArguments(toolCall.ArgumentsJson), "agent", null);
+        var definition = definitions.FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, agentName, StringComparison.OrdinalIgnoreCase));
+        return definition is { AccessLevel: HarnessAccessLevel.FullAccess } &&
+               definition.Tools.Any(IsWorkspaceMutationTool);
+    }
+
+    private static bool IsWorkspaceMutationTool(string toolName) => toolName is
+        "project_write_file" or
+        "project_edit_file" or
+        "project_apply_patch" or
+        "project_run_command";
 
     private async Task<ToolExecutionBundle> ExecuteSubagentToolCallAsync(
         AppSettings settings,
@@ -618,6 +1113,7 @@ public sealed class AgentRunner
         AppSettings settings,
         LuckyProject? project,
         ToolCallRequest toolCall,
+        IMcpToolSession? mcpSession,
         IProgress<AgentProgressEvent>? progress,
         CancellationToken cancellationToken)
     {
@@ -626,13 +1122,39 @@ public sealed class AgentRunner
             return new ToolExecutionResult(toolCall.Name, toolCall.ArgumentsJson, $"Denied by access level {settings.AccessLevel}.", IsError: true);
         }
 
+        var args = ParseToolArguments(toolCall.ArgumentsJson);
+        progress?.Report(new AgentProgressEvent("tool", ToolSummary(toolCall.Name, args), toolCall.ArgumentsJson));
+
+        if (toolCall.Name == "web_search")
+        {
+            return await ExecuteWebSearchToolAsync(settings, args, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (toolCall.Name == "web_open")
+        {
+            return await ExecuteWebOpenToolAsync(settings, args, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (toolCall.Name.StartsWith("mcp_", StringComparison.Ordinal))
+        {
+            return mcpSession is null
+                ? new ToolExecutionResult(toolCall.Name, toolCall.Name, "No MCP session is available for this turn.", IsError: true)
+                : await mcpSession.ExecuteAsync(toolCall.Name, toolCall.ArgumentsJson, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (toolCall.Name == "sandbox_execute")
+        {
+            return await _codeExecutionSandbox.ExecuteAsync(
+                settings.Sandbox,
+                RequiredStringArg(args, "command"),
+                NullableIntArg(args, "timeoutSeconds"),
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (project is null)
         {
             return new ToolExecutionResult(toolCall.Name, toolCall.ArgumentsJson, "No project folder is selected.", IsError: true);
         }
-
-        var args = ParseToolArguments(toolCall.ArgumentsJson);
-        progress?.Report(new AgentProgressEvent("tool", ToolSummary(toolCall.Name, args), toolCall.ArgumentsJson));
 
         try
         {
@@ -664,6 +1186,15 @@ public sealed class AgentRunner
                     RequiredStringArg(args, "oldText"),
                     RequiredStringArg(args, "newText"),
                     cancellationToken).ConfigureAwait(false),
+                "project_apply_patch" => await _projectFileTools.ApplyPatchAsync(
+                    project,
+                    RequiredStringArg(args, "patch"),
+                    cancellationToken).ConfigureAwait(false),
+                "project_run_command" => await _projectTerminalTools.RunCommandAsync(
+                    project,
+                    RequiredStringArg(args, "command"),
+                    NullableIntArg(args, "timeoutSeconds"),
+                    cancellationToken).ConfigureAwait(false),
                 _ => new ToolExecutionResult(toolCall.Name, toolCall.ArgumentsJson, "Unknown tool.", IsError: true)
             };
         }
@@ -673,13 +1204,118 @@ public sealed class AgentRunner
         }
     }
 
+    private async Task<ToolExecutionResult> ExecuteWebSearchToolAsync(
+        AppSettings settings,
+        IReadOnlyDictionary<string, JsonElement> args,
+        CancellationToken cancellationToken)
+    {
+        var query = StringArg(args, "query", null);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                throw new InvalidOperationException("query is required.");
+            }
+
+            var results = await _webSearchClient.SearchAsync(
+                settings.SearxngUrl,
+                query,
+                settings.WebSearchMaxResults,
+                cancellationToken).ConfigureAwait(false);
+
+            return new ToolExecutionResult(
+                "web.search",
+                query,
+                RenderSearchOnly(results));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            return new ToolExecutionResult("web.search", query ?? JsonSerializer.Serialize(args), ex.Message, IsError: true);
+        }
+    }
+
+    private async Task<ToolExecutionResult> ExecuteWebOpenToolAsync(
+        AppSettings settings,
+        IReadOnlyDictionary<string, JsonElement> args,
+        CancellationToken cancellationToken)
+    {
+        var url = StringArg(args, "url", null);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return new ToolExecutionResult("web.open", "", "url is required.", IsError: true);
+        }
+
+        return await _webPageReader
+            .OpenAsync(settings.Browser, url, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     private static IReadOnlyList<LlmToolDefinition> BuildToolDefinitions(
         AppSettings settings,
         LuckyProject? project,
-        IReadOnlyList<SubagentDefinition> subagentDefinitions)
+        IReadOnlyList<SubagentDefinition> subagentDefinitions,
+        IReadOnlyList<McpDiscoveredTool> mcpTools)
     {
         var accessLevel = settings.AccessLevel;
         var tools = new List<LlmToolDefinition>();
+        if (!string.IsNullOrWhiteSpace(settings.SearxngUrl))
+        {
+            tools.Add(new LlmToolDefinition(
+                "web_search",
+                "Search the web through the user's configured SearXNG endpoint and return the top results. Use for live/current information or when the user asks to search the web.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["query"] = new("string", "Search query to send to SearXNG.", Required: true)
+                },
+                ["query"]));
+        }
+
+        if (accessLevel == HarnessAccessLevel.FullAccess &&
+            settings.Browser.Enabled &&
+            settings.Browser.AllowedDomains.Count > 0)
+        {
+            tools.Add(new LlmToolDefinition(
+                "web_open",
+                "Read a static web page from the user's configured trusted-domain list. The reader has no browser login, cookies, or form interaction. Use only for a URL relevant to the user's request.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["url"] = new("string", "Absolute http or https URL on a configured trusted domain.", Required: true)
+                },
+                ["url"]));
+        }
+
+        if (accessLevel == HarnessAccessLevel.FullAccess)
+        {
+            foreach (var mcpTool in mcpTools)
+            {
+                tools.Add(new LlmToolDefinition(
+                    mcpTool.ModelToolName,
+                    $"Run the '{mcpTool.ToolName}' tool exposed by the user's configured MCP server '{mcpTool.ServerName}'. Use it only when it directly serves the user's request; all results are visible in Lucky's trace.",
+                    mcpTool.Parameters,
+                    mcpTool.Required,
+                    mcpTool.InputSchema));
+            }
+        }
+
+        if (accessLevel == HarnessAccessLevel.FullAccess &&
+            settings.Sandbox.Enabled &&
+            !string.IsNullOrWhiteSpace(settings.Sandbox.Image))
+        {
+            tools.Add(new LlmToolDefinition(
+                "sandbox_execute",
+                "Run a Unix shell command in Lucky's explicitly configured Docker code sandbox. The image must already exist locally; Lucky never pulls it. Lucky requires its local Windows named-pipe Docker daemon and rejects remote Docker contexts. The container has no network, a read-only root filesystem, bounded CPU/memory/PIDs, disposable /scratch storage, and no host-folder mounts. This is separate from project_run_command, which is unsandboxed host PowerShell.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["command"] = new("string", "Unix shell command to run inside the configured local Docker image.", Required: true),
+                    ["timeoutSeconds"] = new("integer", "Optional timeout from 1 second up to the sandbox limit configured in Settings.")
+                },
+                ["command"]));
+        }
+
         if (settings.Subagents.Enabled && subagentDefinitions.Count > 0)
         {
             tools.Add(new LlmToolDefinition(
@@ -748,6 +1384,23 @@ public sealed class AgentRunner
                     ["newText"] = new("string", "Replacement text.", Required: true)
                 },
                 ["path", "oldText", "newText"]));
+            tools.Add(new LlmToolDefinition(
+                "project_apply_patch",
+                "Apply a standard unified diff to text files inside the selected project. Validate all hunks first; use this for multi-line or multi-file edits. Git-style a/ and b/ paths are accepted, but do not use rename patches.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["patch"] = new("string", "Complete unified diff beginning with --- and +++ file headers, followed by @@ hunks.", Required: true)
+                },
+                ["patch"]));
+            tools.Add(new LlmToolDefinition(
+                "project_run_command",
+                "Run a PowerShell command from the verified selected-project root. Use it to build, test, inspect diagnostics, or run project tooling. The output, exit code, and timeout are visible to the user. Commands execute with the user's Full access Windows account, so keep them relevant to the selected project.",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["command"] = new("string", "PowerShell command to run from the selected project root.", Required: true),
+                    ["timeoutSeconds"] = new("integer", "Optional timeout from 1 to 300 seconds; defaults to 60.")
+                },
+                ["command"]));
         }
 
         return tools;
@@ -763,25 +1416,74 @@ public sealed class AgentRunner
         AgentInstructionSet instructions,
         IReadOnlyList<SubagentDefinition> subagentDefinitions)
     {
-        var messages = new List<LlmChatMessage>
+        var inputBudget = InputTokenBudget(state.Settings.ActiveProviderSettings.ContextWindowTokens);
+        var systemPrompt = BoundSystemPromptForModel(
+            BuildSystemPrompt(state.Settings, project, memories, searchResults, instructions, subagentDefinitions),
+            inputBudget);
+        var history = session.Messages
+            .Where(message => message.Role is ChatRole.User or ChatRole.Assistant)
+            .TakeLast(Math.Max(4, state.Settings.ContextMessageLimit))
+            .Select(message => new LlmChatMessage(
+                message.Role == ChatRole.User ? "user" : "assistant",
+                message.Content))
+            .ToList();
+
+        var latest = history.LastOrDefault();
+        if (latest is null ||
+            latest.Role != "user" ||
+            !string.Equals(latest.Content, userMessage, StringComparison.Ordinal))
         {
-            new("system", BuildSystemPrompt(state.Settings, project, memories, searchResults, instructions, subagentDefinitions))
+            history.Add(new LlmChatMessage("user", userMessage));
+        }
+
+        while (history.Count > 1 && ContextEstimator.EstimateTokens(systemPrompt) + history.Sum(message => ContextEstimator.EstimateTokens(message.Content)) > inputBudget)
+        {
+            DropOldestConversationTurn(history);
+        }
+
+        var messages = new List<LlmChatMessage>(history.Count + 1)
+        {
+            new("system", systemPrompt)
         };
-
-        foreach (var message in session.Messages
-                     .Where(message => message.Role is ChatRole.User or ChatRole.Assistant)
-                     .TakeLast(Math.Max(4, state.Settings.ContextMessageLimit)))
-        {
-            var role = message.Role == ChatRole.User ? "user" : "assistant";
-            messages.Add(new LlmChatMessage(role, message.Content));
-        }
-
-        if (messages.LastOrDefault()?.Role != "user" || messages.Last().Content != userMessage)
-        {
-            messages.Add(new LlmChatMessage("user", userMessage));
-        }
-
+        messages.AddRange(history);
         return messages;
+    }
+
+    private static int InputTokenBudget(int contextWindowTokens)
+    {
+        var context = Math.Max(1024, contextWindowTokens);
+        var reservedForCompletionAndTools = Math.Clamp(context / 4, 512, 8192);
+        return Math.Max(512, context - reservedForCompletionAndTools);
+    }
+
+    private static string BoundSystemPromptForModel(string systemPrompt, int inputTokenBudget)
+    {
+        var systemBudgetTokens = Math.Max(256, inputTokenBudget * 70 / 100);
+        var maxCharacters = Math.Max(1024, systemBudgetTokens * 4);
+        return BoundTextForModel(
+            systemPrompt,
+            maxCharacters,
+            "\n\n[... Lucky truncated older system context to stay within the configured model context window ...]\n\n");
+    }
+
+    private static void DropOldestConversationTurn(IList<LlmChatMessage> history)
+    {
+        if (history.Count == 0)
+        {
+            return;
+        }
+
+        var removed = history[0];
+        history.RemoveAt(0);
+        if (removed.Role == "user" && history.Count > 1 && history[0].Role == "assistant")
+        {
+            history.RemoveAt(0);
+        }
+
+        while (history.Count > 1 && history[0].Role == "assistant")
+        {
+            history.RemoveAt(0);
+        }
     }
 
     private static string BuildSystemPrompt(
@@ -797,6 +1499,11 @@ public sealed class AgentRunner
         builder.AppendLine();
         builder.AppendLine($"Harness access level: {settings.AccessLevel}.");
         builder.AppendLine("Respect this access level. Use available tools for project filesystem work instead of guessing. Do not imply you performed filesystem, shell, or external actions unless Lucky explicitly supplies tool results.");
+        if (settings.AccessLevel == HarnessAccessLevel.FullAccess)
+        {
+            builder.AppendLine("Full access can expose project-scoped writes, unified patches, PowerShell execution from the verified selected-project root, trusted static page reading, user-configured MCP tools, and an explicitly configured Docker code sandbox. Host PowerShell is not sandboxed. Inspect first, use focused actions, and report only actions confirmed by tool results.");
+        }
+        builder.AppendLine("Lucky web access is through the user's configured SearXNG endpoint. If web_search is available, use it for live/current web information or when the user asks to search. If SearXNG results are already included below, Lucky fetched them for this turn; treat them as real web results and do not claim you lack internet access merely because the search was prefetched.");
         builder.AppendLine("When tools are available, inspect files before describing them and prefer small exact edits over whole-file rewrites.");
         builder.AppendLine("For standalone file creation or artifact-generation requests, create the requested file directly in the selected project instead of inspecting unrelated examples or benchmark files. After a successful write/edit and any targeted verification, stop using tools and provide a concise final status with the relative path.");
         builder.AppendLine("Present answers in clean chat prose for a plain-text UI: avoid decorative Markdown separators, heading hashes, excessive bold markers, and filler preambles. Use short labels, bullets, or tables only when they make the answer easier to scan.");
@@ -826,25 +1533,15 @@ public sealed class AgentRunner
 
         if (memories.Count > 0)
         {
-            builder.AppendLine();
+            var memoryBuilder = new StringBuilder();
             var profile = memories.Where(memory => memory.Kind == MemoryKind.UserProfile).ToArray();
             var durable = memories.Where(memory => memory.Kind == MemoryKind.Memory).ToArray();
-            if (profile.Length > 0)
+            AppendMemorySection(memoryBuilder, "USER profile notes:", profile, settings.UserProfileCharLimit);
+            AppendMemorySection(memoryBuilder, "Relevant durable memories:", durable, settings.MemoryCharLimit);
+            if (memoryBuilder.Length > 0)
             {
-                builder.AppendLine("USER profile notes:");
-                foreach (var memory in profile)
-                {
-                    builder.AppendLine($"- {memory.Summary}");
-                }
-            }
-
-            if (durable.Length > 0)
-            {
-                builder.AppendLine("Relevant durable memories:");
-                foreach (var memory in durable)
-                {
-                    builder.AppendLine($"- {memory.Summary}");
-                }
+                builder.AppendLine();
+                builder.Append(memoryBuilder);
             }
         }
 
@@ -861,14 +1558,67 @@ public sealed class AgentRunner
         return builder.ToString().Trim();
     }
 
+    private static void AppendMemorySection(
+        StringBuilder builder,
+        string heading,
+        IEnumerable<MemoryItem> memories,
+        int charLimit)
+    {
+        var remaining = Math.Max(0, charLimit);
+        if (remaining == 0)
+        {
+            return;
+        }
+
+        var lines = new List<string>();
+        foreach (var memory in memories)
+        {
+            var summary = memory.Summary.Trim();
+            if (summary.Length == 0)
+            {
+                continue;
+            }
+
+            var line = $"- {summary}";
+            if (line.Length > remaining)
+            {
+                if (remaining < 8)
+                {
+                    break;
+                }
+
+                var prefixLength = Math.Max(0, remaining - 3);
+                line = line[..Math.Min(line.Length, prefixLength)].TrimEnd() + "...";
+            }
+
+            lines.Add(line);
+            remaining -= line.Length + Environment.NewLine.Length;
+            if (remaining <= 0 || line.EndsWith("...", StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        builder.AppendLine(heading);
+        foreach (var line in lines)
+        {
+            builder.AppendLine(line);
+        }
+    }
+
     private static bool IsToolAllowed(HarnessAccessLevel accessLevel, string toolName)
     {
         if (accessLevel == HarnessAccessLevel.ChatOnly)
         {
-            return toolName == "subagent_run";
+            return toolName is "web_search" or "subagent_run";
         }
 
-        if (toolName == "subagent_run")
+        if (toolName is "web_search" or "subagent_run")
         {
             return true;
         }
@@ -878,7 +1628,8 @@ public sealed class AgentRunner
             return accessLevel is HarnessAccessLevel.Workspace or HarnessAccessLevel.FullAccess;
         }
 
-        if (toolName is "project_write_file" or "project_edit_file")
+        if (toolName is "project_write_file" or "project_edit_file" or "project_apply_patch" or "project_run_command" or "sandbox_execute" or "web_open" ||
+            toolName.StartsWith("mcp_", StringComparison.Ordinal))
         {
             return accessLevel == HarnessAccessLevel.FullAccess;
         }
@@ -923,6 +1674,26 @@ public sealed class AgentRunner
                bool.TryParse(value.GetString(), out var parsed) && parsed;
     }
 
+    private static int? NullableIntArg(IReadOnlyDictionary<string, JsonElement> args, string name)
+    {
+        if (!args.TryGetValue(name, out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number))
+        {
+            return number;
+        }
+
+        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new InvalidOperationException($"{name} must be an integer.");
+    }
+
     private static string ToolSummary(string toolName, IReadOnlyDictionary<string, JsonElement> args)
     {
         var path = StringArg(args, "path", ".");
@@ -933,7 +1704,13 @@ public sealed class AgentRunner
             "project_search" => $"Searching {path}",
             "project_write_file" => $"Writing {path}",
             "project_edit_file" => $"Editing {path}",
+            "project_apply_patch" => "Applying unified diff patch",
+            "project_run_command" => "Running PowerShell command",
+            "sandbox_execute" => "Running isolated Docker sandbox",
+            "web_search" => $"Searching web for {StringArg(args, "query", "query")}",
+            "web_open" => $"Reading trusted page {StringArg(args, "url", "page")}",
             "subagent_run" => $"Running subagent {StringArg(args, "agent", "subagent")}",
+            _ when toolName.StartsWith("mcp_", StringComparison.Ordinal) => "Running MCP tool",
             _ => $"Running {toolName}"
         };
     }
@@ -978,6 +1755,29 @@ public sealed class AgentRunner
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
+    private static IReadOnlyList<SubagentDefinition> SelectActiveSubagents(
+        IReadOnlyList<SubagentDefinition> definitions,
+        SubagentSettings settings,
+        bool explicitSubagentRequest)
+    {
+        if (!settings.Enabled || definitions.Count == 0)
+        {
+            return [];
+        }
+
+        if (explicitSubagentRequest)
+        {
+            return definitions;
+        }
+
+        if (!settings.AutoDelegateEnabled)
+        {
+            return [];
+        }
+
+        return definitions.Where(definition => definition.AutoActivate).ToArray();
+    }
+
     private static string RenderSearchOnly(IEnumerable<SearchResult> results)
     {
         var builder = new StringBuilder("SearXNG results:");
@@ -1004,7 +1804,9 @@ public sealed class AgentRunner
         ToolCallRequest ToolCall,
         ToolExecutionResult Execution,
         IReadOnlyList<ToolTraceEntry> AdditionalTrace,
-        LlmTokenUsage? Usage);
+        LlmTokenUsage? Usage,
+        DateTimeOffset? StartedAt = null,
+        DateTimeOffset? CompletedAt = null);
 
     private sealed class SubagentTurnBudget(int limit)
     {

@@ -17,6 +17,7 @@ public partial class MainPageViewModel : ObservableObject
     private readonly OpenAiCompatibleClient _modelClient;
     private LuckyState _state = new();
     private bool _isHydratingSettings;
+    private CancellationTokenSource? _activeTurnCancellation;
 
     public MainPageViewModel()
         : this(new LuckyStore(), new AgentRunner(), new OpenAiCompatibleClient())
@@ -38,6 +39,7 @@ public partial class MainPageViewModel : ObservableObject
     public ObservableCollection<string> AccessLevels { get; } = ["Chat only", "Workspace", "Full access"];
     public ObservableCollection<ModelOptionViewModel> ModelOptions { get; } = [];
     public ObservableCollection<string> ModelCatalog { get; } = [];
+    public ObservableCollection<McpServerItemViewModel> McpServers { get; } = [];
 
     [ObservableProperty]
     public partial ProjectItemViewModel? SelectedProject { get; set; }
@@ -89,6 +91,51 @@ public partial class MainPageViewModel : ObservableObject
 
     [ObservableProperty]
     public partial bool AutoWebSearch { get; set; }
+
+    [ObservableProperty]
+    public partial bool BrowserEnabled { get; set; }
+
+    [ObservableProperty]
+    public partial string BrowserAllowedDomains { get; set; } = "";
+
+    [ObservableProperty]
+    public partial bool McpEnabled { get; set; }
+
+    [ObservableProperty]
+    public partial string McpServerName { get; set; } = "";
+
+    [ObservableProperty]
+    public partial string McpServerCommand { get; set; } = "";
+
+    [ObservableProperty]
+    public partial string McpServerArguments { get; set; } = "";
+
+    [ObservableProperty]
+    public partial string McpServerWorkingDirectory { get; set; } = "";
+
+    [ObservableProperty]
+    public partial bool SandboxEnabled { get; set; }
+
+    [ObservableProperty]
+    public partial string SandboxImage { get; set; } = "";
+
+    [ObservableProperty]
+    public partial int SandboxTimeoutSeconds { get; set; } = 60;
+
+    [ObservableProperty]
+    public partial int SandboxMemoryMiB { get; set; } = 512;
+
+    [ObservableProperty]
+    public partial double SandboxCpuLimit { get; set; } = 1.0;
+
+    [ObservableProperty]
+    public partial int SandboxPidsLimit { get; set; } = 128;
+
+    [ObservableProperty]
+    public partial int SandboxScratchMiB { get; set; } = 128;
+
+    [ObservableProperty]
+    public partial bool MemoriesEnabled { get; set; } = true;
 
     [ObservableProperty]
     public partial bool SubagentsEnabled { get; set; } = true;
@@ -144,6 +191,7 @@ public partial class MainPageViewModel : ObservableObject
         RefreshModelOptions();
         ReloadProjects();
         ReloadMemories();
+        ReloadMcpServers();
 
         var selectedProject = Projects.FirstOrDefault(project => project.Id == _state.Settings.SelectedProjectId)
             ?? Projects.FirstOrDefault();
@@ -226,8 +274,9 @@ public partial class MainPageViewModel : ObservableObject
         RefreshDerivedState();
         Trace.Clear();
         IsBusy = true;
-        SendCommand.NotifyCanExecuteChanged();
         Status = "Lucky is thinking...";
+        using var turnCancellation = new CancellationTokenSource();
+        _activeTurnCancellation = turnCancellation;
 
         try
         {
@@ -245,7 +294,13 @@ public partial class MainPageViewModel : ObservableObject
                 assistantItem.AppendThinking(progressEvent);
                 Status = progressEvent.Summary;
             });
-            var result = await _agentRunner.RunTurnAsync(_state, project, session, text, progress: progress).ConfigureAwait(true);
+            var result = await _agentRunner.RunTurnAsync(
+                _state,
+                project,
+                session,
+                text,
+                turnCancellation.Token,
+                progress).ConfigureAwait(true);
             foreach (var trace in result.Trace)
             {
                 Trace.Add(ToolTraceItemViewModel.From(trace));
@@ -280,18 +335,71 @@ public partial class MainPageViewModel : ObservableObject
             await _store.SaveAsync(_state).ConfigureAwait(true);
             RefreshDerivedState();
 
-            var memoryLabel = result.RecalledMemories.Count == 1
-                ? "1 memory"
-                : $"{result.RecalledMemories.Count} memories";
-            Status = result.UsedModel
-                ? $"Answered using {memoryLabel}."
-                : "Answered without a model call.";
+            if (result.UsedModel)
+            {
+                Status = _state.Settings.MemoriesEnabled
+                    ? $"Answered using {MemoryCountLabel(result.RecalledMemories.Count)}."
+                    : "Answered with memories disabled.";
+            }
+            else
+            {
+                Status = "Answered without a model call.";
+            }
+        }
+        catch (OperationCanceledException) when (turnCancellation.IsCancellationRequested)
+        {
+            assistantItem.IsThinking = false;
+            assistantItem.ThinkingText = RenderThinkingText(
+                assistantItem.ThinkingText,
+                [],
+                reasoningContent: null);
+            assistantItem.ThinkingVisibility = string.IsNullOrWhiteSpace(assistantItem.ThinkingText)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            assistantItem.Content = string.IsNullOrWhiteSpace(assistantItem.Content)
+                ? "Stopped."
+                : $"{assistantItem.Content.TrimEnd()}{Environment.NewLine}{Environment.NewLine}Stopped.";
+
+            session.Messages.Add(new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                Content = assistantItem.Content,
+                Trace = assistantItem.ThinkingText
+            });
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            await _store.SaveAsync(_state).ConfigureAwait(true);
+            RefreshDerivedState();
+            Status = "Stopped the current turn.";
         }
         finally
         {
+            if (ReferenceEquals(_activeTurnCancellation, turnCancellation))
+            {
+                _activeTurnCancellation = null;
+            }
+
             IsBusy = false;
-            SendCommand.NotifyCanExecuteChanged();
         }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanStop))]
+    private void Stop()
+    {
+        if (_activeTurnCancellation is not { IsCancellationRequested: false } cancellation)
+        {
+            return;
+        }
+
+        Status = "Stopping the current turn...";
+        cancellation.Cancel();
+    }
+
+    private bool CanStop() => IsBusy;
+
+    partial void OnIsBusyChanged(bool value)
+    {
+        SendCommand.NotifyCanExecuteChanged();
+        StopCommand.NotifyCanExecuteChanged();
     }
 
     private static async Task RevealTextAsync(MessageItemViewModel message, string content)
@@ -303,6 +411,10 @@ public partial class MainPageViewModel : ObservableObject
             await Task.Delay(18).ConfigureAwait(true);
         }
     }
+
+    private static string MemoryCountLabel(int count) => count == 1
+        ? "1 memory"
+        : $"{count} memories";
 
     private static IEnumerable<string> RevealSegments(string content)
     {
@@ -396,12 +508,89 @@ public partial class MainPageViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveSettingsAsync()
     {
+        if (!IsSandboxImageValueValid(SandboxImage))
+        {
+            Status = "Sandbox image names can contain letters, digits, '.', '_', '-', '/', ':', and '@'.";
+            return;
+        }
+
         ApplySettings();
         await _store.SaveAsync(_state).ConfigureAwait(true);
         ApiKeyInput = "";
         Status = "Settings saved.";
         RefreshModelOptions();
         RefreshDerivedState();
+    }
+
+    [RelayCommand]
+    private void AddMcpServer()
+    {
+        var command = McpServerCommand.Trim();
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            Status = "Enter an MCP server command before adding it.";
+            return;
+        }
+
+        if (command.Contains('\r') || command.Contains('\n'))
+        {
+            Status = "An MCP command cannot contain a line break.";
+            return;
+        }
+
+        IReadOnlyList<string> arguments;
+        try
+        {
+            arguments = CommandLineArgumentParser.Parse(McpServerArguments);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Status = ex.Message;
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(McpServerName)
+            ? Path.GetFileNameWithoutExtension(command)
+            : McpServerName.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = "MCP server";
+        }
+
+        _state.Settings.Mcp.Servers.Add(new McpServerDefinition
+        {
+            Name = name,
+            Command = command,
+            Arguments = arguments.ToList(),
+            WorkingDirectory = string.IsNullOrWhiteSpace(McpServerWorkingDirectory)
+                ? null
+                : McpServerWorkingDirectory.Trim()
+        });
+        ReloadMcpServers();
+        McpServerName = "";
+        McpServerCommand = "";
+        McpServerArguments = "";
+        McpServerWorkingDirectory = "";
+        Status = $"Added MCP server '{name}'. Save Settings to persist it.";
+    }
+
+    [RelayCommand]
+    private void RemoveMcpServer(McpServerItemViewModel? item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        var server = _state.Settings.Mcp.Servers.FirstOrDefault(candidate => candidate.Id == item.Id);
+        if (server is null)
+        {
+            return;
+        }
+
+        _state.Settings.Mcp.Servers.Remove(server);
+        ReloadMcpServers();
+        Status = $"Removed MCP server '{item.Name}'. Save Settings to persist it.";
     }
 
     [RelayCommand]
@@ -570,6 +759,17 @@ public partial class MainPageViewModel : ObservableObject
             SelectedAccessLevel = AccessName(_state.Settings.AccessLevel);
             SearxngUrl = _state.Settings.SearxngUrl;
             AutoWebSearch = _state.Settings.AutoWebSearch;
+            BrowserEnabled = _state.Settings.Browser.Enabled;
+            BrowserAllowedDomains = string.Join(", ", _state.Settings.Browser.AllowedDomains);
+            McpEnabled = _state.Settings.Mcp.Enabled;
+            SandboxEnabled = _state.Settings.Sandbox.Enabled;
+            SandboxImage = _state.Settings.Sandbox.Image;
+            SandboxTimeoutSeconds = _state.Settings.Sandbox.TimeoutSeconds;
+            SandboxMemoryMiB = _state.Settings.Sandbox.MemoryMiB;
+            SandboxCpuLimit = _state.Settings.Sandbox.CpuLimit;
+            SandboxPidsLimit = _state.Settings.Sandbox.PidsLimit;
+            SandboxScratchMiB = _state.Settings.Sandbox.ScratchMiB;
+            MemoriesEnabled = _state.Settings.MemoriesEnabled;
             SubagentsEnabled = _state.Settings.Subagents.Enabled;
             AutoDelegateEnabled = _state.Settings.Subagents.AutoDelegateEnabled;
             MaxParallelSubagents = _state.Settings.Subagents.MaxParallelAgents;
@@ -691,6 +891,20 @@ public partial class MainPageViewModel : ObservableObject
         _state.Settings.AccessLevel = AccessFromName(SelectedAccessLevel);
         _state.Settings.SearxngUrl = string.IsNullOrWhiteSpace(SearxngUrl) ? "http://127.0.0.1:8080" : SearxngUrl.Trim();
         _state.Settings.AutoWebSearch = AutoWebSearch;
+        _state.Settings.Browser.Enabled = BrowserEnabled;
+        _state.Settings.Browser.AllowedDomains = NormalizeBrowserDomains(BrowserAllowedDomains);
+        _state.Settings.Mcp.Enabled = McpEnabled;
+        _state.Settings.Sandbox.Enabled = SandboxEnabled;
+        _state.Settings.Sandbox.Image = SandboxImage.Trim();
+        _state.Settings.Sandbox.AllowReadOnlyProjectMount = false;
+        _state.Settings.Sandbox.TimeoutSeconds = Math.Clamp(SandboxTimeoutSeconds, 5, 120);
+        _state.Settings.Sandbox.MemoryMiB = Math.Clamp(SandboxMemoryMiB, 64, 2048);
+        _state.Settings.Sandbox.CpuLimit = double.IsFinite(SandboxCpuLimit)
+            ? Math.Clamp(SandboxCpuLimit, 0.25, 2.0)
+            : 1.0;
+        _state.Settings.Sandbox.PidsLimit = Math.Clamp(SandboxPidsLimit, 16, 256);
+        _state.Settings.Sandbox.ScratchMiB = Math.Clamp(SandboxScratchMiB, 16, 512);
+        _state.Settings.MemoriesEnabled = MemoriesEnabled;
         _state.Settings.Subagents.Enabled = SubagentsEnabled;
         _state.Settings.Subagents.AutoDelegateEnabled = AutoDelegateEnabled;
         _state.Settings.Subagents.MaxParallelAgents = Math.Clamp(MaxParallelSubagents, 1, 12);
@@ -770,6 +984,34 @@ public partial class MainPageViewModel : ObservableObject
         {
             Memories.Add(MemoryItemViewModel.From(memory));
         }
+    }
+
+    private void ReloadMcpServers()
+    {
+        McpServers.Clear();
+        foreach (var server in _state.Settings.Mcp.Servers)
+        {
+            McpServers.Add(McpServerItemViewModel.From(server));
+        }
+    }
+
+    private static List<string> NormalizeBrowserDomains(string value) => value
+        .Split([',', ';', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(domain => domain.Trim().TrimStart('.'))
+        .Where(domain => domain.Length > 0 &&
+                         domain.Length <= 253 &&
+                         domain.All(character => char.IsLetterOrDigit(character) || character is '-' or '.'))
+        .Select(domain => domain.ToLowerInvariant())
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Take(32)
+        .ToList();
+
+    private static bool IsSandboxImageValueValid(string? value)
+    {
+        var image = value?.Trim() ?? "";
+        return image.Length <= 255 &&
+               (image.Length == 0 || char.IsLetterOrDigit(image[0])) &&
+               image.All(character => char.IsLetterOrDigit(character) || character is '.' or '_' or '-' or '/' or ':' or '@');
     }
 
     private void RefreshModeVisibility()
@@ -1081,6 +1323,20 @@ public sealed class ToolTraceItemViewModel
         Tool = trace.IsError ? $"{trace.Tool} failed" : trace.Tool,
         Input = trace.Input,
         Output = MainPageViewModel.SummarizeToolOutput(trace)
+    };
+}
+
+public sealed class McpServerItemViewModel
+{
+    public string Id { get; init; } = "";
+    public string Name { get; init; } = "";
+    public string Detail { get; init; } = "";
+
+    public static McpServerItemViewModel From(McpServerDefinition server) => new()
+    {
+        Id = server.Id,
+        Name = server.Name,
+        Detail = "stdio · launch configuration protected for this Windows user"
     };
 }
 

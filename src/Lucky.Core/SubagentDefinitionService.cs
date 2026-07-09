@@ -13,8 +13,27 @@ public sealed class SubagentDefinitionService
         "project_read_file",
         "project_search",
         "project_write_file",
-        "project_edit_file"
+        "project_edit_file",
+        "project_apply_patch",
+        "project_run_command"
     };
+
+    private static readonly HashSet<string> WorkspaceReadOnlyTools = new(StringComparer.Ordinal)
+    {
+        "project_list_files",
+        "project_read_file",
+        "project_search"
+    };
+
+    private enum DefinitionOrigin
+    {
+        BuiltIn,
+        UserSettings,
+        UserProfileFile,
+        ProjectFile
+    }
+
+    private sealed record SourcedDefinition(SubagentDefinition Definition, DefinitionOrigin Origin);
 
     private static JsonSerializerOptions CreateFileJsonOptions()
     {
@@ -28,31 +47,32 @@ public sealed class SubagentDefinitionService
         LuckyProject? project,
         CancellationToken cancellationToken = default)
     {
-        var definitions = new Dictionary<string, SubagentDefinition>(StringComparer.OrdinalIgnoreCase);
+        var definitions = new Dictionary<string, SourcedDefinition>(StringComparer.OrdinalIgnoreCase);
         foreach (var definition in BuiltIns())
         {
-            AddOrReplace(definitions, definition);
+            AddOrReplace(definitions, definition, DefinitionOrigin.BuiltIn);
         }
 
         foreach (var definition in state.Settings.Subagents.CustomAgents)
         {
-            AddOrReplace(definitions, definition);
+            AddOrReplace(definitions, definition, DefinitionOrigin.UserSettings);
         }
 
         foreach (var definition in await LoadFileDefinitionsAsync(ProfileAgentsDirectory(), cancellationToken).ConfigureAwait(false))
         {
-            AddOrReplace(definitions, definition);
+            AddOrReplace(definitions, definition, DefinitionOrigin.UserProfileFile);
         }
 
         if (project is not null)
         {
             foreach (var definition in await LoadProjectDefinitionsAsync(project, cancellationToken).ConfigureAwait(false))
             {
-                AddOrReplace(definitions, definition);
+                AddOrReplace(definitions, definition, DefinitionOrigin.ProjectFile);
             }
         }
 
         return definitions.Values
+            .Select(entry => entry.Definition)
             .Where(definition => definition.Enabled)
             .OrderBy(definition => definition.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -128,7 +148,10 @@ public sealed class SubagentDefinitionService
         return string.Join(Environment.NewLine, lines);
     }
 
-    private static void AddOrReplace(IDictionary<string, SubagentDefinition> definitions, SubagentDefinition definition)
+    private static void AddOrReplace(
+        IDictionary<string, SourcedDefinition> definitions,
+        SubagentDefinition definition,
+        DefinitionOrigin origin)
     {
         var normalized = Normalize(definition);
         if (normalized is null)
@@ -136,7 +159,41 @@ public sealed class SubagentDefinitionService
             return;
         }
 
-        definitions[normalized.Name] = normalized;
+        if (origin == DefinitionOrigin.ProjectFile)
+        {
+            // Project files are untrusted workspace content. They may add an explicitly invoked,
+            // read-only helper, but cannot shadow built-ins or user-controlled agents.
+            if (definitions.ContainsKey(normalized.Name))
+            {
+                return;
+            }
+
+            normalized = RestrictProjectDefinition(normalized);
+        }
+
+        definitions[normalized.Name] = new SourcedDefinition(normalized, origin);
+    }
+
+    private static SubagentDefinition RestrictProjectDefinition(SubagentDefinition definition)
+    {
+        var tools = definition.Tools.Where(WorkspaceReadOnlyTools.Contains).ToList();
+        if (tools.Count == 0)
+        {
+            tools = ["project_list_files", "project_read_file", "project_search"];
+        }
+
+        return new SubagentDefinition
+        {
+            Name = definition.Name,
+            Description = definition.Description,
+            Instructions = definition.Instructions,
+            Tools = tools,
+            Enabled = definition.Enabled,
+            AutoActivate = false,
+            AccessLevel = HarnessAccessLevel.Workspace,
+            ModelOverride = definition.ModelOverride,
+            ReasoningEffortOverride = definition.ReasoningEffortOverride
+        };
     }
 
     private static SubagentDefinition? Normalize(SubagentDefinition definition)
@@ -197,12 +254,12 @@ public sealed class SubagentDefinitionService
             }
 
             var directory = Path.GetFullPath(Path.Combine(root, ".lucky", "agents"));
-            if (!IsWithinRoot(root, directory))
+            if (!IsWithinRoot(root, directory) || !IsPathFreeOfReparsePoints(root, directory))
             {
                 return Task.FromResult<IReadOnlyList<SubagentDefinition>>([]);
             }
 
-            return LoadFileDefinitionsAsync(directory, cancellationToken);
+            return LoadFileDefinitionsAsync(directory, cancellationToken, rejectReparsePoints: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
         {
@@ -212,9 +269,15 @@ public sealed class SubagentDefinitionService
 
     private static async Task<IReadOnlyList<SubagentDefinition>> LoadFileDefinitionsAsync(
         string directory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool rejectReparsePoints = false)
     {
         if (!Directory.Exists(directory))
+        {
+            return [];
+        }
+
+        if (rejectReparsePoints && HasReparsePoint(directory))
         {
             return [];
         }
@@ -223,6 +286,11 @@ public sealed class SubagentDefinitionService
         foreach (var path in Directory.EnumerateFiles(directory, "*.json").Order(StringComparer.OrdinalIgnoreCase))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (rejectReparsePoints && HasReparsePoint(path))
+            {
+                continue;
+            }
+
             try
             {
                 await using var stream = File.OpenRead(path);
@@ -253,5 +321,36 @@ public sealed class SubagentDefinitionService
         return string.Equals(normalizedRoot, target.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), comparison) ||
                target.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison) ||
                target.StartsWith(normalizedRoot + Path.AltDirectorySeparatorChar, comparison);
+    }
+
+    private static bool IsPathFreeOfReparsePoints(string root, string target)
+    {
+        if (HasReparsePoint(root))
+        {
+            return false;
+        }
+
+        var current = root;
+        var relative = Path.GetRelativePath(root, target);
+        foreach (var segment in relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, segment);
+            if (HasReparsePoint(current))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasReparsePoint(string path)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path))
+        {
+            return false;
+        }
+
+        return (File.GetAttributes(path) & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint;
     }
 }

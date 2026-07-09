@@ -67,6 +67,15 @@ public sealed class MemoryServiceTests
             Confidence = 1,
             UpdatedAt = now.AddDays(-20)
         };
+        var globalMemory = new MemoryItem
+        {
+            Summary = "User prefers vim keybindings for editing code",
+            Tags = ["vim", "keybindings", "editing"],
+            Evidence = "I always use vim keybindings globally.",
+            ProjectId = null,
+            Confidence = 1,
+            UpdatedAt = now.AddDays(-1)
+        };
         var otherProjectMemory = new MemoryItem
         {
             Summary = "User prefers vim keybindings for editing code",
@@ -98,16 +107,54 @@ public sealed class MemoryServiceTests
         };
 
         var results = service.RetrieveRelevant(
-            [otherProjectMemory, disabledMemory, pinnedUnrelated, projectMemory],
+            [otherProjectMemory, disabledMemory, pinnedUnrelated, globalMemory, projectMemory],
             "vim keybindings in the editor",
             "project_a",
             limit: 3);
 
         Assert.Equal(projectMemory.Id, results[0].Id);
-        Assert.Contains(results, memory => memory.Id == otherProjectMemory.Id);
-        Assert.Contains(results, memory => memory.Id == pinnedUnrelated.Id);
+        Assert.Contains(results, memory => memory.Id == globalMemory.Id);
+        Assert.DoesNotContain(results, memory => memory.Id == otherProjectMemory.Id);
+        Assert.DoesNotContain(results, memory => memory.Id == pinnedUnrelated.Id);
         Assert.DoesNotContain(results, memory => memory.Id == disabledMemory.Id);
         Assert.Null(results[0].LastUsedAt);
+    }
+
+    [Fact]
+    public void RetrieveRelevant_EmptyQueryStillFiltersDisabledAndOutOfScopePinnedMemories()
+    {
+        var service = new MemoryService();
+        var globalPinned = new MemoryItem
+        {
+            Summary = "Global pinned memory",
+            ProjectId = null,
+            Pinned = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var projectPinned = new MemoryItem
+        {
+            Summary = "Pinned memory from another project",
+            ProjectId = "project_b",
+            Pinned = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+        var disabledPinned = new MemoryItem
+        {
+            Summary = "Disabled pinned memory",
+            ProjectId = null,
+            Pinned = true,
+            Enabled = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
+        var results = service.RetrieveRelevant(
+            [disabledPinned, projectPinned, globalPinned],
+            "??",
+            projectId: null,
+            limit: 5);
+
+        var result = Assert.Single(results);
+        Assert.Equal(globalPinned.Id, result.Id);
     }
 
     [Fact]

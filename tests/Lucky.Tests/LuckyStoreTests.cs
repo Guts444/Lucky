@@ -21,6 +21,7 @@ public sealed class LuckyStoreTests
 
             var projectDirectory = Directory.CreateDirectory(Path.Combine(tempRoot, "ProjectAlpha")).FullName;
             var project = LuckyStore.EnsureProject(state, projectDirectory);
+            state.Settings.MemoriesEnabled = false;
             var session = Assert.Single(state.Sessions);
             session.Title = "Planning";
             session.Messages.Add(new ChatMessage
@@ -56,6 +57,7 @@ public sealed class LuckyStoreTests
             Assert.Equal("I prefer concise code review feedback", loadedMemory.Summary);
             Assert.Equal(project.Id, loadedMemory.ProjectId);
             Assert.Equal(session.Id, loadedMemory.SourceSessionId);
+            Assert.False(loaded.Settings.MemoriesEnabled);
         }
         finally
         {
@@ -134,6 +136,7 @@ public sealed class LuckyStoreTests
             Assert.Equal(32768, state.Settings.LmStudio.ContextWindowTokens);
             Assert.Equal(2200, state.Settings.MemoryCharLimit);
             Assert.Equal(1375, state.Settings.UserProfileCharLimit);
+            Assert.True(state.Settings.MemoriesEnabled);
         }
         finally
         {

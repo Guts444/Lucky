@@ -1,6 +1,6 @@
 # Lucky
 
-Lucky is a WinUI 3 local-first LLM harness for Windows. It is designed to give a user one desktop place for project-scoped chats, configurable model providers, SearXNG-backed web search, durable semantic memory, explicit access levels, and real project filesystem tools.
+Lucky is a WinUI 3 local-first LLM harness for Windows. It is designed to give a user one desktop place for project-scoped chats, configurable model providers, SearXNG-backed web search, durable memory, explicit access levels, and real project filesystem tools.
 
 The current repository has the core harness model in `src/Lucky.Core` and a Codex-inspired WinUI 3 shell in `src/Lucky.App`. The app layer has a glassy project/history rail, right-aligned user messages, left-aligned assistant output, a compact Thinking expander, selectable canvas text, a bottom composer with a single model/reasoning selector, access controls, a context/usage meter, automatic chat auto-scroll, and a full settings workspace.
 
@@ -14,7 +14,7 @@ The current repository has the core harness model in `src/Lucky.Core` and a Code
 - Scope chats to projects so conversations stay tied to the workspace they are about.
 - Let the agent read, search, create, and edit files inside the selected project through traceable tools.
 - Capture durable memory only when useful, avoid secrets, and retrieve relevant memories into future turns.
-- Split memory into Hermes-style `USER` profile facts and `MEMORY` conversation/project facts with visible budgets.
+- Split memory into Hermes-style `USER` profile facts and `MEMORY` conversation/project facts with visible, enforced budgets.
 - Expose clear access levels so users know what Lucky can and cannot touch.
 
 ## Solution Layout
@@ -38,6 +38,7 @@ docs/
 - Optional: LM Studio for local model hosting.
 - Optional: SearXNG for local or self-hosted web search.
 - Optional: a DeepSeek API key for hosted model calls.
+- Optional: Docker Desktop configured for Linux containers, plus a sandbox image that you have already built or loaded locally, for isolated code execution.
 
 ## Build
 
@@ -122,9 +123,23 @@ Lucky can search the web through a user-controlled SearXNG instance. The default
 http://127.0.0.1:8080
 ```
 
-Lucky calls the JSON search endpoint and injects the top configured results into the model context. Users can explicitly search with `/web query`. Lucky may also search automatically for prompts that look current, such as requests involving latest releases, today's data, prices, schedules, weather, or news. Offline artifact/build prompts, such as requests to create a standalone HTML file or app, skip automatic web search unless the user explicitly starts the prompt with `/web`.
+Lucky calls the JSON search endpoint and injects the top configured results into the model context. Users can explicitly search with `/web query`. Lucky may also search automatically for prompts that look current, such as requests involving latest releases, today's data, prices, schedules, weather, or news. The parent model also receives a `web_search` tool backed by the configured SearXNG endpoint, so it can run a live search during a tool loop when the user asks for current information. Offline artifact/build prompts, such as requests to create a standalone HTML file or app, skip automatic web search unless the user explicitly starts the prompt with `/web`.
 
-## Semantic Memory
+## Trusted Page Reader
+
+Lucky can also expose `web_open` as an opt-in, static page-reading tool. Enable it in Settings and list the domains Lucky may read, such as `docs.microsoft.com` or `modelcontextprotocol.io`. The reader has no browser cookies, logins, or form interaction; it accepts only HTTP(S) on default ports, validates every redirect against the same domain list, rejects hosts that resolve to loopback/private/link-local/reserved addresses, rejects binary responses, and caps downloaded and model-visible text.
+
+`web_open` is available only in `FullAccess`, so a model cannot turn a normal chat or workspace-only turn into arbitrary browsing. It is a bounded document reader, not interactive browser automation. For interactive browser workflows, an explicitly configured MCP server can supply browser tools.
+
+## MCP Servers (stdio)
+
+Lucky supports user-configured local **stdio** Model Context Protocol servers. In Settings, add a display name, executable command, optional arguments, and optional working folder. Arguments are parsed by Lucky and passed through `ProcessStartInfo.ArgumentList`; Lucky does not invoke a command shell for the configured argument string. The command, arguments, and working folder are protected with Windows DPAPI when settings are saved, so tokens placed in an MCP launch command are not stored as plaintext in Lucky state. Existing plaintext MCP launch settings migrate on their next save.
+
+MCP is disabled by default and exposed only during a `FullAccess` parent turn. Lucky starts configured servers for that one turn, performs the MCP initialize / `tools/list` / `tools/call` lifecycle, maps discovered tools into the provider's OpenAI-compatible tool schema, adds visible trace entries, and stops the processes after the turn. MCP tools are deliberately not delegated to subagents yet.
+
+Treat an MCP server like installed local software: its tools can access files, services, or the network according to that server's own permissions. Configured server processes inherit the current user's process environment, so avoid placing secrets in a display name or inherited environment. Lucky bounds protocol frames, stderr diagnostics, tool descriptions/schemas, and returned text/structured data before exposing them to a model. The current implementation is operational for stdio tool servers, including paged discovery and text/structured tool results. Streamable HTTP, OAuth, resources/prompts, server-initiated requests, and long-lived tool-list subscriptions remain future work.
+
+## Durable Memory
 
 Lucky memory is local and lightweight. The current core captures memories from explicit or preference-like user messages, skips likely secrets, and stores summaries with tags, evidence, confidence, project id, source session id, and memory kind.
 
@@ -133,9 +148,9 @@ Memory kinds:
 - `USER`: identity, preferences, naming corrections, and long-lived profile facts.
 - `MEMORY`: project/session facts and durable notes from chats.
 
-Memory retrieval is lexical today: Lucky tokenizes the query, scores enabled memories, boosts project matches, boosts pinned memories, and adds a small confidence and recency component. The architecture calls this semantic memory because it is the durable memory layer that should evolve toward embeddings or another semantic index without changing the user-facing concept.
+Memory retrieval is lexical today: Lucky tokenizes the query, scores enabled memories that are in scope for the current access level, boosts project matches, boosts pinned memories, and adds a small confidence and recency component. This durable memory layer should evolve toward embeddings or another semantic index without changing the user-facing concept.
 
-The settings page shows separate USER and MEMORY character budgets so memory does not silently become an unbounded prompt dump.
+The settings page can disable memories. When disabled, Lucky neither captures new memories nor recalls existing memories into the model prompt; stored memory items remain in local state so users can re-enable or manage them later. Settings also show separate USER and MEMORY character budgets, and prompt assembly respects those caps so memory does not silently become an unbounded prompt dump.
 
 ## Project-Scoped Chats
 
@@ -149,6 +164,8 @@ Project scoping affects:
 - Which project name and path are supplied to the model.
 - Which folder the filesystem tools may touch.
 
+In `ChatOnly`, Lucky does not supply the selected project name, path, root `AGENTS.md`, project custom agents, project memories, or project filesystem tools to the model.
+
 ## Project Filesystem Tools
 
 Lucky's agent loop can expose project-scoped file tools to the model. The first tool set is intentionally narrow:
@@ -158,14 +175,26 @@ Lucky's agent loop can expose project-scoped file tools to the model. The first 
 - search project text files with a regex or plain query
 - create or overwrite UTF-8 text files
 - replace one exact text occurrence in a file
+- apply a validated unified diff for multi-line or multi-file text edits
+- run a bounded Windows PowerShell command for builds, tests, and project diagnostics
 
-The tool service enforces path safety in code, not just in the prompt. Paths are resolved against the selected project, attempts to escape with `..` or absolute outside paths are rejected, common generated folders such as `.git`, `.vs`, `bin`, `obj`, and `node_modules` are skipped, and large or binary files are refused.
+The tool service enforces path safety in code, not just in the prompt. Paths are resolved against the selected project, attempts to escape with `..` or absolute outside paths are rejected, common generated folders such as `.git`, `.vs`, `bin`, `obj`, and `node_modules` are skipped, and large or binary files are refused. Unified diffs are parsed before writes; every hunk is checked first, a stale line offset may use one unique nearby context match, and multi-file patches are staged and restored on a commit failure. Rename and binary patches are refused with an actionable error.
 
-Tool activity is returned as trace data and shown in the chat thinking/progress surface so Lucky does not silently pretend to have inspected or edited files. If a provider repeats a tool call that already succeeded, or reaches the bounded tool-round cap, Lucky asks for one final answer with tools disabled and reports completed file operations instead of ending with a generic loop-limit message.
+In `FullAccess`, `project_run_command` starts `powershell.exe` at the verified project root with `-NoProfile` and `-NonInteractive`. It defaults to 60 seconds, accepts a 1–300-second timeout, captures bounded stdout and stderr independently, reports the exit code and elapsed time, and requests tree termination on timeout or caller cancellation. Lucky reports whether it confirmed the PowerShell host exit; detached children cannot be independently proven gone. The initial directory is confined to the project root, but a raw PowerShell command is not an OS sandbox: it runs as the current Windows user and must be treated as an explicit Full access capability, with its trace visible to the user.
+
+## Docker Code Execution Sandbox
+
+Lucky also has an optional `sandbox_execute` tool for disposable code execution. It is disabled by default, appears only in `FullAccess`, and requires both an explicit enablement choice and a configured Docker image name. Lucky requires Docker's local Windows named-pipe daemon; it refuses explicit remote `DOCKER_HOST` values and non-default `DOCKER_CONTEXT` values rather than silently running code on another machine. Lucky first verifies that image in Docker's local cache, checks that it declares no Docker volumes, then runs with `--pull=never`; it never downloads an image on the user's behalf. If Docker Desktop is stopped, a remote Docker configuration is selected, the image is missing, or the image declares a volume, the failure is returned visibly in the tool trace and no container is started.
+
+The sandbox runs a Unix `sh -lc` command inside the configured Linux image, overriding its entrypoint to `sh`. It has no network, a read-only container root, no Linux capabilities, `no-new-privileges`, a non-root UID, bounded CPU, memory, PID, file-descriptor, scratch, and execution timeout limits. `/scratch` is an in-container tmpfs that is discarded after the run. Lucky never mounts a host folder, including the selected project: sandbox code cannot read or write the workspace. A named container is removed automatically on exit and Lucky also requests forced removal after timeout or cancellation. Older saved project-mount preferences are migrated off and ignored.
+
+This is a Docker-container boundary, not a claim of perfect VM-grade isolation or secure data erasure. Its effective isolation and resource controls still depend on the local Docker daemon, engine configuration, platform, and image. Use trusted, purpose-built local images; images need a compatible Unix `sh` and any runtime required by the command. The host `project_run_command` PowerShell tool remains explicitly unsandboxed.
+
+Tool activity is returned as trace data and shown in the chat thinking/progress surface so Lucky does not silently pretend to have inspected or edited files. Parent turns are bounded to 12 rounds and 12 tool calls per model response; child turns are bounded separately (up to 8 calls per response). Lucky compacts old tool exchanges and tool schemas before every provider call, stops after three fully failed rounds, honors Stop/cancellation, serializes writable subagents, and asks for a final answer without tools on repeated successful calls or a round cap.
 
 ## Subagents
 
-Lucky can delegate bounded work to subagents during a turn. Subagents use the same configured provider as the parent turn, inherit the current access level, and cannot exceed the selected project's safety boundaries. Automatic delegation is enabled by default for parallelizable work such as exploration, review, test triage, and documentation checks. The user can disable subagents, disable auto-delegation, or cap the number of subagents in Settings.
+Lucky can delegate bounded work to subagents during a turn. Subagents use the same configured provider as the parent turn, inherit the current access level, and cannot exceed the selected project's safety boundaries. Automatic delegation is model-mediated: when enabled, Lucky exposes only auto-activating agents to the parent model for parallelizable work such as exploration, review, test triage, and documentation checks. Explicit-only agents, such as `worker`, appear when the user asks for subagents or names an agent. The user can disable subagents, disable auto-delegation, or cap the number of subagents in Settings.
 
 Built-in subagents include `explorer`, `reviewer`, `tester`, `writer`, and `worker`. Custom JSON definitions can be added under:
 
@@ -174,21 +203,21 @@ Built-in subagents include `explorer`, `reviewer`, `tester`, `writer`, and `work
 <project>\.lucky\agents\*.json
 ```
 
-Each definition can set a name, description, instructions, tool allowlist, model override, reasoning override, and access cap. Project custom agents override broader definitions with the same name. Subagent activity appears in the Thinking trace with `subagent.<name>` prefixes and returns compact summaries to the parent instead of dumping child transcripts into the main chat.
+Each user-owned definition can set a name, description, instructions, tool allowlist, model override, reasoning override, and access cap. Only user-level custom agents may explicitly allow FullAccess write/patch/PowerShell tools; writable children are serialized. Project-owned `.lucky/agents` files are treated as untrusted workspace content: they cannot override built-ins or user agents, are reparse-point checked, and are forced to explicit, read-only Workspace helpers. Subagent activity appears in the Thinking trace with `subagent.<name>` prefixes and returns compact summaries to the parent instead of dumping child transcripts into the main chat.
 
-When a selected project contains `AGENTS.md` or `AGENTS.override.md` at its root, Lucky loads that instruction file into the parent turn and every subagent run. This keeps project-specific working rules visible to all agents without granting broader filesystem tools.
+When workspace context is allowed and the selected project contains `AGENTS.md` or `AGENTS.override.md` at its root, Lucky loads that instruction file into the parent turn and every subagent run. This keeps project-specific working rules visible to all workspace-aware agents without granting broader filesystem tools.
 
 ## Access Levels
 
 Lucky models access as a setting that is included in the system prompt for every turn.
 
-- `ChatOnly`: use chat, configured memories, and supplied search results only.
+- `ChatOnly`: use chat, global configured memories, and configured SearXNG search only. Lucky does not inject selected project path/name, project `AGENTS.md`, project memories, project custom agents, or project filesystem tools.
 - `Workspace`: allow read-only project tools: list, read, and search inside the selected project.
-- `FullAccess`: allow project write tools as well: create/overwrite and exact text replacement inside the selected project.
+- `FullAccess`: allow project write tools as well: create/overwrite, exact text replacement, unified-diff patching, and the visible PowerShell command runner; this is also the explicit gate for trusted page reading, user-configured MCP tools, and an explicitly configured Docker sandbox.
 
 Project-changing prompts in `ChatOnly` or `Workspace` receive a direct message asking the user to switch to `FullAccess`, rather than giving the model unavailable write tools and waiting for a denial loop.
 
-The assistant should never imply it performed filesystem, shell, browser, subagent, or network actions unless Lucky explicitly supplied those tool results. Shell, browser, and whole-machine tools are not part of this first filesystem tool layer.
+The assistant should never imply it performed filesystem, shell, browser, subagent, MCP, sandbox, or network actions unless Lucky explicitly supplied those tool results. Lucky has a bounded static page reader, stdio MCP host, an explicit FullAccess PowerShell runner, and an opt-in constrained Docker sandbox with clearly documented limits.
 
 ## Contributor Rule
 

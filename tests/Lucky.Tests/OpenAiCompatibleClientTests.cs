@@ -182,6 +182,61 @@ public sealed class OpenAiCompatibleClientTests
     }
 
     [Fact]
+    public async Task CompleteChatAsync_PreservesFullMcpInputSchema()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => JsonResponse(
+            """
+            {
+              "choices": [
+                {
+                  "message": {
+                    "content": "done"
+                  }
+                }
+              ]
+            }
+            """));
+        var client = new OpenAiCompatibleClient(new HttpClient(handler));
+        using var schemaDocument = JsonDocument.Parse(
+            """
+            {
+              "type": "object",
+              "properties": {
+                "filter": {
+                  "type": "object",
+                  "properties": { "tag": { "type": "string" } },
+                  "required": ["tag"]
+                }
+              },
+              "required": ["filter"],
+              "additionalProperties": true
+            }
+            """);
+        var tools = new[]
+        {
+            new LlmToolDefinition(
+                "mcp_catalog_lookup",
+                "Look up catalog entries",
+                new Dictionary<string, ToolParameterDefinition>(),
+                [],
+                schemaDocument.RootElement.Clone())
+        };
+
+        await client.CompleteChatAsync(
+            new ProviderSettings { BaseUrl = "https://provider.example/v1", Model = "tool-model" },
+            apiKey: null,
+            [new LlmChatMessage("user", "Find a tagged item")],
+            tools);
+
+        var request = Assert.Single(handler.Requests);
+        using var payload = JsonDocument.Parse(request.Body!);
+        var parameters = payload.RootElement.GetProperty("tools")[0].GetProperty("function").GetProperty("parameters");
+        Assert.True(parameters.GetProperty("additionalProperties").GetBoolean());
+        Assert.Equal("object", parameters.GetProperty("properties").GetProperty("filter").GetProperty("type").GetString());
+        Assert.Equal("tag", parameters.GetProperty("properties").GetProperty("filter").GetProperty("required")[0].GetString());
+    }
+
+    [Fact]
     public async Task CompleteChatAsync_WhenNoToolsProvidedOmitsToolsAndToolChoice()
     {
         var handler = new StubHttpMessageHandler((_, _) => JsonResponse(

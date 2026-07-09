@@ -85,6 +85,36 @@ public sealed class AgentRunnerToolLoopTests
     }
 
     [Fact]
+    public async Task RunTurnAsync_FullAccessCanApplyUnifiedDiffPatch()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.FullAccess);
+        try
+        {
+            var path = Path.Combine(root, "note.txt");
+            await File.WriteAllTextAsync(path, "old\n");
+            var patchCall = new ToolCallRequest(
+                "call_patch",
+                "project_apply_patch",
+                """{"patch":"--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n"}""");
+            var client = new ScriptedLlmClient(
+                new LlmResponse("", "fake", [patchCall]),
+                new LlmResponse("Patched note.txt.", "fake"));
+            var runner = new AgentRunner(client);
+
+            var result = await runner.RunTurnAsync(state, project, session, "update note.txt with a patch");
+
+            Assert.Equal("new\n", await File.ReadAllTextAsync(path));
+            Assert.Contains(result.Trace, entry => entry.Tool == "project.apply_patch" && !entry.IsError);
+            Assert.Contains(client.Requests[0].Tools, tool => tool.Name == "project_apply_patch");
+            Assert.Contains("Patched note", result.AssistantMessage);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
     public async Task RunTurnAsync_RepeatedSuccessfulWriteFinalizesWithoutHittingToolCap()
     {
         var (root, state, project, session) = CreateState(HarnessAccessLevel.FullAccess);
@@ -192,6 +222,69 @@ public sealed class AgentRunnerToolLoopTests
     }
 
     [Fact]
+    public async Task RunTurnAsync_ExplicitWebSearchFramesPrefetchedResultsAsSearxngAccess()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.Workspace);
+        try
+        {
+            state.Settings.AutoWebSearch = false;
+            var client = new ScriptedLlmClient(new LlmResponse("I can answer from SearXNG results.", "fake"));
+            var search = new FakeSearchClient([new SearchResult("SearXNG Result", "https://example.test/search", "Fresh result.")]);
+            var runner = new AgentRunner(client, search);
+
+            await runner.RunTurnAsync(state, project, session, "/web can you search now?");
+
+            Assert.Equal(1, search.SearchCalls);
+            Assert.Equal("can you search now?", search.LastQuery);
+            var systemPrompt = client.Requests[0].Messages[0].Content;
+            Assert.Contains("Lucky web access is through the user's configured SearXNG endpoint", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("Lucky fetched them for this turn", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("do not claim you lack internet access", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("SearXNG Result", systemPrompt, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_WebSearchToolCallsSearxngInChatOnly()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.ChatOnly);
+        try
+        {
+            state.Settings.AutoWebSearch = false;
+            var searchCall = new ToolCallRequest("call_web", "web_search", """{"query":"ps4 update timing"}""");
+            var client = new ScriptedLlmClient(
+                new LlmResponse("", "fake", [searchCall]),
+                new LlmResponse("SearXNG found PS4 update timing.", "fake"));
+            var search = new FakeSearchClient([new SearchResult("PS4 Update", "https://example.test/ps4", "Timing notes.")]);
+            var runner = new AgentRunner(client, search);
+
+            var result = await runner.RunTurnAsync(state, project, session, "can you search the web?");
+
+            Assert.Contains("SearXNG found", result.AssistantMessage);
+            Assert.Equal(1, search.SearchCalls);
+            Assert.Equal("ps4 update timing", search.LastQuery);
+            Assert.Contains(client.Requests[0].Tools, tool => tool.Name == "web_search");
+            Assert.DoesNotContain(client.Requests[0].Tools, tool => tool.Name.StartsWith("project_", StringComparison.Ordinal));
+            Assert.Contains(result.Trace, entry =>
+                entry.Tool == "web.search" &&
+                !entry.IsError &&
+                entry.Output.Contains("PS4 Update", StringComparison.Ordinal));
+            Assert.Contains(client.Requests[1].Messages, message =>
+                message.Role == "tool" &&
+                message.Content.Contains("SearXNG results", StringComparison.Ordinal) &&
+                message.Content.Contains("Timing notes", StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
     public async Task RunTurnAsync_ChatOnlyDoesNotExposeFilesystemTools()
     {
         var (root, state, project, session) = CreateState(HarnessAccessLevel.ChatOnly);
@@ -202,7 +295,130 @@ public sealed class AgentRunnerToolLoopTests
 
             await runner.RunTurnAsync(state, project, session, "list files");
 
+            Assert.Contains(client.Requests[0].Tools, tool => tool.Name == "web_search");
             Assert.DoesNotContain(client.Requests[0].Tools, tool => tool.Name.StartsWith("project_", StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_ChatOnlyDoesNotLoadOrInjectProjectContext()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.ChatOnly);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "AGENTS.md"), "PROJECT_INSTRUCTIONS_SENTINEL");
+            project.Name = "PROJECT_NAME_SENTINEL";
+            state.Memories.Add(new MemoryItem
+            {
+                Summary = "GLOBAL_MEMORY_SENTINEL",
+                Pinned = true,
+                ProjectId = null
+            });
+            state.Memories.Add(new MemoryItem
+            {
+                Summary = "PROJECT_MEMORY_SENTINEL",
+                Pinned = true,
+                ProjectId = project.Id
+            });
+            var client = new ScriptedLlmClient(new LlmResponse("No workspace context.", "fake"));
+            var runner = new AgentRunner(client);
+
+            var result = await runner.RunTurnAsync(state, project, session, "spawn a reviewer");
+
+            var request = Assert.Single(client.Requests);
+            var systemPrompt = request.Messages[0].Content;
+            Assert.DoesNotContain("Selected project:", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("Project path:", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain(root, systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("PROJECT_NAME_SENTINEL", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("PROJECT_INSTRUCTIONS_SENTINEL", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("PROJECT_MEMORY_SENTINEL", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("GLOBAL_MEMORY_SENTINEL", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain(result.Trace, entry => entry.Tool == "instructions");
+            Assert.DoesNotContain(request.Tools, tool => tool.Name.StartsWith("project_", StringComparison.Ordinal));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_WhenMemoriesDisabledDoesNotCaptureRecallOrInject()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.Workspace);
+        try
+        {
+            state.Settings.MemoriesEnabled = false;
+            state.Memories.Add(new MemoryItem
+            {
+                Summary = "EXISTING_MEMORY_SENTINEL",
+                Pinned = true,
+                ProjectId = project.Id
+            });
+            var client = new ScriptedLlmClient(new LlmResponse("Done.", "fake"));
+            var runner = new AgentRunner(client);
+
+            var result = await runner.RunTurnAsync(
+                state,
+                project,
+                session,
+                "remember that DISABLED_CAPTURE_SENTINEL should not be saved");
+
+            var request = Assert.Single(client.Requests);
+            Assert.Empty(result.CapturedMemories);
+            Assert.Empty(result.RecalledMemories);
+            Assert.Single(state.Memories);
+            Assert.DoesNotContain("EXISTING_MEMORY_SENTINEL", request.Messages[0].Content, StringComparison.Ordinal);
+            Assert.DoesNotContain("DISABLED_CAPTURE_SENTINEL", state.Memories[0].Summary, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_EnforcesMemoryPromptBudgets()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.Workspace);
+        try
+        {
+            state.Settings.UserProfileCharLimit = 32;
+            state.Settings.MemoryCharLimit = 34;
+            state.Memories.Add(new MemoryItem
+            {
+                Kind = MemoryKind.UserProfile,
+                Summary = "PROFILE_ALPHA beta gamma delta epsilon",
+                Tags = ["alpha"],
+                ProjectId = null,
+                Pinned = true
+            });
+            state.Memories.Add(new MemoryItem
+            {
+                Kind = MemoryKind.Memory,
+                Summary = "DURABLE_ALPHA beta gamma delta epsilon",
+                Tags = ["alpha"],
+                ProjectId = project.Id,
+                Pinned = true
+            });
+            var client = new ScriptedLlmClient(new LlmResponse("Done.", "fake"));
+            var runner = new AgentRunner(client);
+
+            await runner.RunTurnAsync(state, project, session, "alpha");
+
+            var systemPrompt = client.Requests[0].Messages[0].Content;
+            Assert.DoesNotContain("PROFILE_ALPHA beta gamma delta epsilon", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("DURABLE_ALPHA beta gamma delta epsilon", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("PROFILE_ALPHA", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("DURABLE_ALPHA", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("...", systemPrompt, StringComparison.Ordinal);
+            Assert.All(SectionMemoryLines(systemPrompt, "USER profile notes:"), line => Assert.True(line.Length <= state.Settings.UserProfileCharLimit));
+            Assert.All(SectionMemoryLines(systemPrompt, "Relevant durable memories:"), line => Assert.True(line.Length <= state.Settings.MemoryCharLimit));
         }
         finally
         {
@@ -319,6 +535,21 @@ public sealed class AgentRunnerToolLoopTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static IReadOnlyList<string> SectionMemoryLines(string text, string heading)
+    {
+        var lines = text.Split(Environment.NewLine);
+        var start = Array.FindIndex(lines, line => line == heading);
+        if (start < 0)
+        {
+            return [];
+        }
+
+        return lines
+            .Skip(start + 1)
+            .TakeWhile(line => line.StartsWith("- ", StringComparison.Ordinal))
+            .ToArray();
     }
 
     private sealed class ScriptedLlmClient(params LlmResponse[] responses) : ILlmClient

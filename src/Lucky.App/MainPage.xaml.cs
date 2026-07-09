@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using Windows.Foundation;
 using Windows.Storage.Pickers;
 using Windows.System;
 
@@ -71,6 +72,32 @@ public sealed partial class MainPage : Page
         {
             ViewModel.ApiKeyInput = passwordBox.Password;
         }
+    }
+
+    private void SettingsSection_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string section })
+        {
+            return;
+        }
+
+        var target = section switch
+        {
+            "General" => GeneralSettingsSection,
+            "Model" => ModelSettingsSection,
+            "Personalization" => PersonalizationSettingsSection,
+            "Memory" => MemorySettingsSection,
+            "Searxng" => SearxngSettingsSection,
+            _ => null
+        };
+        if (target is null)
+        {
+            return;
+        }
+
+        SettingsContent.UpdateLayout();
+        var offset = target.TransformToVisual(SettingsContent).TransformPoint(new Point()).Y;
+        SettingsScrollViewer.ChangeView(null, Math.Max(0, offset - 12), null, disableAnimation: false);
     }
 
     private void Messages_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)

@@ -1,5 +1,7 @@
 # Lucky Contributor Guide
 
+This file is primarily for coding agents working in this repository. Human-facing product and architecture docs live in `README.md` and `docs/`.
+
 Lucky is a WinUI 3, local-first LLM harness for Windows. Keep changes aligned with that identity: user data should stay local by default, model providers should be explicit and configurable, and tool use should be visible enough that users understand what Lucky did on their behalf.
 
 ## Documentation Ownership
@@ -32,9 +34,9 @@ Lucky is a WinUI 3, local-first LLM harness for Windows. Keep changes aligned wi
 
 Lucky's access levels are part of the user trust model:
 
-- `ChatOnly`: the assistant may answer from chat context, configured memories, and supplied search results, but should not imply workspace access.
+- `ChatOnly`: the assistant may answer from chat context, global configured memories, and configured SearXNG search, but should not imply workspace access.
 - `Workspace`: the assistant may use selected project context that Lucky explicitly supplies.
-- `FullAccess`: reserved for future capabilities that may operate beyond the selected workspace. Treat this level as requiring especially clear UI and tool traces.
+- `FullAccess`: project write/edit tools are available inside the selected workspace. Broader machine access is reserved for future capabilities and must require especially clear UI and tool traces.
 
 ## Collaboration Rules
 

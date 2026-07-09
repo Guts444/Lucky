@@ -23,7 +23,7 @@ public sealed class MemoryService
         if (queryVector.Count == 0)
         {
             return memories
-                .Where(memory => memory.Enabled && (memory.Pinned || memory.ProjectId == projectId || memory.ProjectId is null))
+                .Where(memory => memory.Enabled && IsInScope(memory, projectId))
                 .OrderByDescending(memory => memory.Pinned)
                 .ThenByDescending(memory => memory.UpdatedAt)
                 .Take(Math.Max(1, limit))
@@ -32,7 +32,7 @@ public sealed class MemoryService
 
         var now = DateTimeOffset.UtcNow;
         return memories
-            .Where(memory => memory.Enabled)
+            .Where(memory => memory.Enabled && IsInScope(memory, projectId))
             .Select(memory => new
             {
                 Memory = memory,
@@ -43,6 +43,17 @@ public sealed class MemoryService
             .Take(Math.Max(1, limit))
             .Select(item => item.Memory)
             .ToArray();
+    }
+
+    private static bool IsInScope(MemoryItem memory, string? projectId)
+    {
+        if (memory.ProjectId is null)
+        {
+            return true;
+        }
+
+        return projectId is not null &&
+               string.Equals(memory.ProjectId, projectId, StringComparison.Ordinal);
     }
 
     public IReadOnlyList<MemoryItem> CaptureFromUserMessage(string userMessage, string? projectId, string? sessionId)

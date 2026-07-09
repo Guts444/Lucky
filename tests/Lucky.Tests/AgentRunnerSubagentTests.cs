@@ -147,6 +147,68 @@ public sealed class AgentRunnerSubagentTests
         }
     }
 
+    [Fact]
+    public async Task RunTurnAsync_AutoDelegationOmitsExplicitOnlySubagents()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.Workspace);
+        try
+        {
+            state.Settings.Subagents.AutoDelegateEnabled = true;
+            state.Settings.Subagents.CustomAgents.Add(new SubagentDefinition
+            {
+                Name = "manual-helper",
+                Description = "Manual-only helper.",
+                Instructions = "Only run when explicitly requested.",
+                AutoActivate = false
+            });
+            var client = new ScriptedLlmClient(new LlmResponse("Done.", "fake"));
+            var runner = new AgentRunner(client);
+
+            await runner.RunTurnAsync(state, project, session, "review the project shape");
+
+            var systemPrompt = client.Requests[0].Messages[0].Content;
+            Assert.Contains("Available subagents", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("- reviewer (auto):", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("- worker (explicit):", systemPrompt, StringComparison.Ordinal);
+            Assert.DoesNotContain("manual-helper", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains(client.Requests[0].Tools, tool => tool.Name == "subagent_run");
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_ExplicitSubagentRequestIncludesExplicitOnlySubagents()
+    {
+        var (root, state, project, session) = CreateState(HarnessAccessLevel.Workspace);
+        try
+        {
+            state.Settings.Subagents.AutoDelegateEnabled = true;
+            state.Settings.Subagents.CustomAgents.Add(new SubagentDefinition
+            {
+                Name = "manual-helper",
+                Description = "Manual-only helper.",
+                Instructions = "Only run when explicitly requested.",
+                AutoActivate = false
+            });
+            var client = new ScriptedLlmClient(new LlmResponse("Done.", "fake"));
+            var runner = new AgentRunner(client);
+
+            await runner.RunTurnAsync(state, project, session, "spawn manual-helper and worker subagents");
+
+            var systemPrompt = client.Requests[0].Messages[0].Content;
+            Assert.Contains("- worker (explicit):", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains("- manual-helper (explicit):", systemPrompt, StringComparison.Ordinal);
+            Assert.Contains(client.Requests[0].Tools, tool => tool.Name == "subagent_run");
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     private static (string Root, LuckyState State, LuckyProject Project, ChatSession Session) CreateState(HarnessAccessLevel accessLevel)
     {
         var root = Path.Combine(Path.GetTempPath(), "Lucky.AgentRunnerSubagentTests", Guid.NewGuid().ToString("N"));
