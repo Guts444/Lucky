@@ -32,7 +32,7 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint(provider.BaseUrl, "models"));
-        AddAuth(request, apiKey);
+        AddAuth(request, ProviderApiKey(provider, apiKey));
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
@@ -64,11 +64,17 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         var payload = BuildChatPayload(provider, messages, tools, streamProgress is not null);
         if (streamProgress is not null)
         {
-            return await CompleteStreamingAsync(provider, apiKey, payload, streamProgress, cancellationToken).ConfigureAwait(false);
+            return await CompleteStreamingAsync(
+                provider,
+                apiKey,
+                payload,
+                tools,
+                streamProgress,
+                cancellationToken).ConfigureAwait(false);
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(provider.BaseUrl, "chat/completions"));
-        AddAuth(request, apiKey);
+        AddAuth(request, ProviderApiKey(provider, apiKey));
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -79,7 +85,7 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         }
 
         using var document = JsonDocument.Parse(responseText);
-        return ParseCompletionResponse(document.RootElement, provider.Model);
+        return ParseCompletionResponse(document.RootElement, provider.Model, tools);
     }
 
     private static Dictionary<string, object?> BuildChatPayload(
@@ -106,7 +112,12 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         if (tools is { Count: > 0 })
         {
             payload["tools"] = tools.Select(SerializeTool).ToArray();
-            payload["tool_choice"] = "auto";
+            // DeepSeek V4 thinking mode rejects tool_choice even though it supports tools.
+            // Omitting the field retains the provider's automatic selection behavior.
+            if (!IsDeepSeekV4Thinking(provider))
+            {
+                payload["tool_choice"] = "auto";
+            }
         }
 
         if (provider.SupportsThinking)
@@ -137,11 +148,12 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         ProviderSettings provider,
         string? apiKey,
         Dictionary<string, object?> payload,
+        IReadOnlyList<LlmToolDefinition>? tools,
         IProgress<LlmStreamDelta> streamProgress,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(provider.BaseUrl, "chat/completions"));
-        AddAuth(request, apiKey);
+        AddAuth(request, ProviderApiKey(provider, apiKey));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
@@ -222,15 +234,19 @@ public sealed class OpenAiCompatibleClient : ILlmClient
                 reasoning.Append(reasoningDelta);
             }
 
-            if (!string.IsNullOrEmpty(contentDelta) || !string.IsNullOrEmpty(reasoningDelta))
+            // When tools are available, some OpenAI-compatible providers stream a textual
+            // tool protocol in `content` instead of native tool_calls. Buffer answer text until
+            // the response is classified so protocol markup can never leak into the chat UI.
+            var reportContentDelta = tools is not { Count: > 0 } ? contentDelta : null;
+            if (!string.IsNullOrEmpty(reportContentDelta) || !string.IsNullOrEmpty(reasoningDelta))
             {
-                streamProgress.Report(new LlmStreamDelta(contentDelta ?? "", reasoningDelta));
+                streamProgress.Report(new LlmStreamDelta(reportContentDelta ?? "", reasoningDelta));
             }
 
             AccumulateToolCallDeltas(delta, toolCalls);
         }
 
-        var parsedToolCalls = toolCalls
+        IReadOnlyList<ToolCallRequest> parsedToolCalls = toolCalls
             .Values
             .Where(call => call.Name.Length > 0)
             .Select(call => new ToolCallRequest(
@@ -239,15 +255,31 @@ public sealed class OpenAiCompatibleClient : ILlmClient
                 call.Arguments.Length == 0 ? "{}" : call.Arguments.ToString()))
             .ToArray();
 
+        var cleanContent = content.ToString().Trim();
+        if (parsedToolCalls.Count == 0 && tools is { Count: > 0 })
+        {
+            var textual = TextualToolCallParser.Parse(cleanContent, tools.Select(tool => tool.Name));
+            cleanContent = textual.CleanContent;
+            parsedToolCalls = textual.ToolCalls;
+        }
+
+        if (parsedToolCalls.Count == 0 && tools is { Count: > 0 } && cleanContent.Length > 0)
+        {
+            streamProgress.Report(new LlmStreamDelta(cleanContent, null));
+        }
+
         return new LlmResponse(
-            content.ToString().Trim(),
+            cleanContent,
             model,
             parsedToolCalls,
             reasoning.Length == 0 ? null : reasoning.ToString(),
             usage);
     }
 
-    private static LlmResponse ParseCompletionResponse(JsonElement root, string fallbackModel)
+    private static LlmResponse ParseCompletionResponse(
+        JsonElement root,
+        string fallbackModel,
+        IReadOnlyList<LlmToolDefinition>? tools)
     {
         var model = root.TryGetProperty("model", out var modelElement)
             ? modelElement.GetString() ?? fallbackModel
@@ -261,10 +293,17 @@ public sealed class OpenAiCompatibleClient : ILlmClient
                                reasoningElement.ValueKind != JsonValueKind.Null
             ? reasoningElement.GetString()
             : null;
-        var toolCalls = ParseToolCalls(message);
+        IReadOnlyList<ToolCallRequest> toolCalls = ParseToolCalls(message);
+        var cleanContent = content?.Trim() ?? "";
+        if (toolCalls.Count == 0 && tools is { Count: > 0 })
+        {
+            var textual = TextualToolCallParser.Parse(cleanContent, tools.Select(tool => tool.Name));
+            cleanContent = textual.CleanContent;
+            toolCalls = textual.ToolCalls;
+        }
         var usage = TryParseUsage(root);
 
-        return new LlmResponse(content?.Trim() ?? "", model, toolCalls, reasoningContent, usage);
+        return new LlmResponse(cleanContent, model, toolCalls, reasoningContent, usage);
     }
 
     private static LlmTokenUsage? TryParseUsage(JsonElement root)
@@ -368,6 +407,13 @@ public sealed class OpenAiCompatibleClient : ILlmClient
             }).ToArray();
         }
 
+        if (!string.IsNullOrWhiteSpace(message.ReasoningContent))
+        {
+            // Required by DeepSeek thinking mode for every assistant tool-call message
+            // replayed in subsequent rounds.
+            serialized["reasoning_content"] = message.ReasoningContent;
+        }
+
         return serialized;
     }
 
@@ -455,6 +501,10 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         return new Uri($"{trimmed.TrimEnd('/')}/{path}");
     }
 
+    private static bool IsDeepSeekV4Thinking(ProviderSettings provider) =>
+        provider.ThinkingEnabled &&
+        provider.Model.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase);
+
     private static void AddAuth(HttpRequestMessage request, string? apiKey)
     {
         if (!string.IsNullOrWhiteSpace(apiKey))
@@ -462,6 +512,11 @@ public sealed class OpenAiCompatibleClient : ILlmClient
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
         }
     }
+
+    private static string? ProviderApiKey(ProviderSettings provider, string? apiKey) =>
+        string.Equals(provider.DisplayName, "LM Studio", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : apiKey;
 
     private static string TrimForDisplay(string value, int maxLength)
     {

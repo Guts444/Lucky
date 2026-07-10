@@ -44,7 +44,7 @@ Lucky.Tests
   Unit and behavior tests for core services
 ```
 
-The app shell mirrors the Codex desktop layout: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, rounded multiline composer, compact access control, a single model/reasoning picker, context/usage meter, follow-latest scrolling that stops when the user scrolls upward, and a settings workspace with a left settings nav.
+The app shell mirrors the Codex desktop layout: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, a one-tone rounded multiline composer with compact pill/circle controls, a single chat-only model/reasoning picker, context/usage meter, follow-latest scrolling that stops when the user scrolls upward, a clickable empty-state working-folder path, and a settings workspace with provider setup separated into subscription and API/local groups.
 
 ## Runtime State
 
@@ -66,7 +66,7 @@ The state graph contains:
 - `Sessions`: project-scoped chat sessions and messages.
 - `Memories`: durable memory summaries with kind, tags, evidence, confidence, source session, and optional project id.
 
-Writes use a temporary file and replacement/move to reduce the chance of corrupting the state file during save.
+Writes are serialized through a per-store gate and use a temporary file plus replacement/move to reduce concurrent-save races and the chance of corrupting state.
 
 ## Provider Layer
 
@@ -80,7 +80,7 @@ Writes use a temporary file and replacement/move to reduce the chance of corrupt
 - `GET {baseUrl}/models`
 - `POST {baseUrl}/chat/completions`
 
-Provider settings include display name, transport, base URL where applicable, model name, API-key requirement, protected API key, thinking support, reasoning flag, reasoning effort, effective input-context tokens, and cached provider model capabilities. The WinUI layer exposes all providers through combined `ModelOptionViewModel` entries so the composer and settings use one model picker. Defaults are:
+Provider settings include display name, transport, base URL where applicable, model name, API-key requirement, protected API key, thinking support, reasoning flag, reasoning effort, effective input-context tokens, and cached provider model capabilities. Provider setup is independent from active chat selection. Settings edits accounts/endpoints/keys and refreshes catalogs; only the composer changes the active model/reasoning option. Defaults are:
 
 - DeepSeek: `https://api.deepseek.com`, `deepseek-v4-pro`, API key required, thinking supported and enabled, 1,000,000 context tokens for v4 models.
 - LM Studio: `http://127.0.0.1:1234/v1`, no API key required.
@@ -91,15 +91,15 @@ API keys are unprotected only at call time through `CredentialProtector`. If a s
 
 When `SupportsThinking` is true, `OpenAiCompatibleClient` sends `thinking: { type: "enabled" }` plus `reasoning_effort` for thinking mode, or `thinking: { type: "disabled" }` plus temperature when disabled. Providers without thinking support receive the portable payload.
 
-Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window. For Codex, `CodexAppServerClient` reads the signed-in app-server model catalog and its model-cache context metadata, preserves the catalog's reasoning-effort order, and treats the effective input budget as the meter limit.
+Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window. For Codex, `CodexAppServerClient` reuses the authenticated account connection and pages through all visible entries from the official `model/list` catalog. It preserves each advertised reasoning-effort order and treats the effective input budget as the meter limit. It deliberately does not merge another app's/global Codex cache or synthesize unadvertised model ids, which preserves account isolation and avoids offering models the current Lucky sign-in may not be permitted to use. Windows Credential Manager's value limit is smaller than the ChatGPT OAuth bundle, so Lucky serializes helper startup, briefly materializes Codex's file credential, and immediately replaces it with a current-user DPAPI-protected `auth.json.dpapi` blob after initialization and token refreshes.
 
-Tool schemas are sent as OpenAI-compatible `tools` with `tool_choice: auto` only when tools are available for that model round. Assistant tool-call messages and `tool` result messages are serialized back into the next model round. Returned `tool_calls` are parsed into `ToolCallRequest` records so the core loop remains provider-neutral. When the agent loop needs to finalize after a loop guard, Lucky calls the provider with no `tools` and no `tool_choice` so the model must answer instead of continuing to request tools.
+Tool schemas are sent as OpenAI-compatible `tools`; `tool_choice: auto` is used where supported and deliberately omitted for DeepSeek V4 thinking mode. Assistant tool-call messages, required `reasoning_content`, and `tool` results are serialized into the next round. Native `tool_calls` are parsed into provider-neutral `ToolCallRequest` records. A bounded compatibility parser also converts DeepSeek textual DSML only when the named tool was exposed in that request, and strips protocol markup from chat content. When a loop guard finalizes, Lucky calls the provider with no tools so the model must answer.
 
-When the UI supplies stream progress, `OpenAiCompatibleClient` sends `stream: true` and parses server-sent events. Text deltas are reported immediately for token-by-token rendering, DeepSeek `reasoning_content` deltas are forwarded as actual Thinking text, and streamed `tool_calls` are accumulated by index before the agent loop executes them. Non-streaming calls still use the same response parser with `stream: false`.
+When the UI supplies stream progress, `OpenAiCompatibleClient` sends `stream: true` and parses server-sent events. With tools available, answer text is buffered until Lucky can distinguish prose from textual tool protocol; clean final prose is then revealed while DSML is executed rather than rendered. DeepSeek `reasoning_content` still streams to Thinking, and native `tool_calls` accumulate by index before execution.
 
 Provider responses can include standard OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens`. Non-streaming responses parse usage directly. For thinking-capable streamed responses, Lucky asks for `stream_options.include_usage` and captures usage-only chunks before skipping empty choices. `AgentRunner` aggregates billed input/output usage across bounded tool-loop rounds, while carrying the latest request's input-context value separately for the composer meter.
 
-`CodexAppServerClient` launches `codex app-server --stdio` from a verified official CLI executable. It initializes the documented local JSON-RPC protocol, starts the managed ChatGPT browser OAuth flow, and never receives raw OAuth material. Each Lucky turn uses an ephemeral Codex thread in a neutral local runtime directory with the `read-only` sandbox and `untrusted` approval policy. Lucky exposes its own selected-project tools as app-server dynamic tools; native Codex command, file, network, browser, skill, and permission requests are denied. Dynamic tool calls come back through the existing Lucky tool loop, so access levels and Thinking traces stay authoritative.
+`CodexAppServerClient` launches `codex app-server --stdio`, initializes the documented local JSON-RPC protocol, and starts managed ChatGPT browser OAuth without receiving raw OAuth material. Every process receives a Lucky-owned `CODEX_HOME`, separate from the user's global Codex state. Lucky writes a restrictive managed config there that disables native shell, web search, apps, hooks, memories, remote plugins, and multi-agent features. Each turn also uses an ephemeral neutral directory, `read-only` sandbox, and `untrusted` approval policy. Lucky exposes selected-project tools as dynamic tools; their results return through the existing tool loop so access levels and traces remain authoritative.
 
 ## SearXNG Search
 
@@ -256,6 +256,8 @@ This is a constrained container boundary, not a guarantee of VM-grade isolation,
 ## Project-Scoped Chats
 
 Projects are keyed by normalized folder path. `LuckyStore.EnsureProject` reuses an existing project when the same path is opened, updates `LastOpenedAt`, and sets it as selected. New projects receive an initial chat session.
+
+The empty chat state binds its working-folder button to the selected project's path and routes it through the same folder-picker flow as the project rail. Selecting a different folder therefore reuses the normal project identity, persistence, and initial-session rules rather than mutating a project path in place.
 
 Sessions include `ProjectId`, title, timestamps, and messages. Memory capture receives the effective project id and session id so later retrieval can prefer memories from the active workspace while still allowing global memories. In `ChatOnly`, the effective project id is null.
 

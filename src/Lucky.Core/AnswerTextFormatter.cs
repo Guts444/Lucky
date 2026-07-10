@@ -11,6 +11,13 @@ public static partial class AnswerTextFormatter
             return string.Empty;
         }
 
+        var hadToolProtocol = TextualToolCallParser.ContainsProtocolMarkup(content);
+        content = TextualToolCallParser.CleanForDisplay(content);
+        if (hadToolProtocol && string.IsNullOrWhiteSpace(content))
+        {
+            return "This earlier response contained an unexecuted tool request, so Lucky hid its internal protocol markup.";
+        }
+
         var normalized = content.Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n');
         var output = new List<string>();

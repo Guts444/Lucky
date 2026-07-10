@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -75,11 +77,23 @@ public sealed class CodexAppServerClient : ILlmClient, ICodexSubscriptionService
 
     public async Task<CodexAccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken = default)
     {
-        var connection = await GetAccountConnectionAsync(cancellationToken).ConfigureAwait(false);
-        var result = await connection
-            .SendRequestAsync("account/read", new { refreshToken = true }, cancellationToken)
-            .ConfigureAwait(false);
-        return ParseAccountStatus(result);
+        for (var attempt = 0; ; attempt++)
+        {
+            CodexAppServerConnection? connection = null;
+            try
+            {
+                connection = await GetAccountConnectionAsync(cancellationToken).ConfigureAwait(false);
+                var result = await connection
+                    .SendRequestAsync("account/read", new { refreshToken = true }, cancellationToken)
+                    .ConfigureAwait(false);
+                await CodexAppHomeDirectory.ProtectAuthFileAsync(cancellationToken).ConfigureAwait(false);
+                return ParseAccountStatus(result);
+            }
+            catch (Exception ex) when (attempt == 0 && IsBrokenAccountPipe(ex))
+            {
+                await ResetAccountConnectionAsync(connection).ConfigureAwait(false);
+            }
+        }
     }
 
     public async Task<CodexLoginStart> StartLoginAsync(CancellationToken cancellationToken = default)
@@ -117,6 +131,7 @@ public sealed class CodexAppServerClient : ILlmClient, ICodexSubscriptionService
                     : result.Error);
             }
 
+            await CodexAppHomeDirectory.ProtectAuthFileAsync(cancellationToken).ConfigureAwait(false);
             return await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -125,22 +140,60 @@ public sealed class CodexAppServerClient : ILlmClient, ICodexSubscriptionService
         }
     }
 
+    public async Task<CodexAccountStatus> LogoutAsync(CancellationToken cancellationToken = default)
+    {
+        var connection = await GetAccountConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await connection.SendRequestAsync("account/logout", new { }, cancellationToken).ConfigureAwait(false);
+        await CodexAppHomeDirectory.ForgetAuthAsync(cancellationToken).ConfigureAwait(false);
+        return await GetAccountStatusAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<ProviderModelCapability>> GetModelCapabilitiesAsync(
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await CodexAppServerConnection.StartAsync(cancellationToken).ConfigureAwait(false);
-        var result = await connection
-            .SendRequestAsync("model/list", new { }, cancellationToken)
-            .ConfigureAwait(false);
+        var pages = new List<JsonElement>();
+        string? cursor = null;
+        do
+        {
+            JsonElement result;
+            for (var attempt = 0; ; attempt++)
+            {
+                CodexAppServerConnection? connection = null;
+                try
+                {
+                    // Reuse the authenticated account app-server. Starting a second packaged child
+                    // just to list models can trigger unrelated repository/git initialization and
+                    // also duplicates the OAuth/runtime state Lucky already has open.
+                    connection = await GetAccountConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    result = await connection
+                        .SendRequestAsync(
+                            "model/list",
+                            new { limit = 100, cursor, includeHidden = false },
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    break;
+                }
+                catch (Exception ex) when (attempt == 0 && IsBrokenAccountPipe(ex))
+                {
+                    await ResetAccountConnectionAsync(connection).ConfigureAwait(false);
+                }
+            }
+
+            if (!result.TryGetProperty("data", out var page) || page.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            pages.Add(page.Clone());
+            cursor = StringProperty(result, "nextCursor");
+        } while (!string.IsNullOrWhiteSpace(cursor));
+
         var contexts = ReadCachedModelContexts();
 
-        if (!result.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
-
         var models = new List<ProviderModelCapability>();
-        foreach (var item in data.EnumerateArray())
+        foreach (var item in pages.SelectMany(page => page.EnumerateArray()).GroupBy(
+                     item => StringProperty(item, "id") ?? StringProperty(item, "model"),
+                     StringComparer.OrdinalIgnoreCase).Select(group => group.First()))
         {
             var id = StringProperty(item, "id") ?? StringProperty(item, "model");
             if (string.IsNullOrWhiteSpace(id) || BoolProperty(item, "hidden"))
@@ -218,6 +271,30 @@ public sealed class CodexAppServerClient : ILlmClient, ICodexSubscriptionService
         }
     }
 
+    private async Task ResetAccountConnectionAsync(CodexAppServerConnection? failedConnection)
+    {
+        await _accountGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (failedConnection is not null && ReferenceEquals(_accountConnection, failedConnection))
+            {
+                await _accountConnection.DisposeAsync().ConfigureAwait(false);
+                _accountConnection = null;
+            }
+        }
+        finally
+        {
+            _accountGate.Release();
+        }
+    }
+
+    private static bool IsBrokenAccountPipe(Exception exception) =>
+        exception is IOException ||
+        exception is InvalidOperationException &&
+        (exception.Message.Contains("pipe", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("not running", StringComparison.OrdinalIgnoreCase) ||
+         exception.Message.Contains("app-server ended", StringComparison.OrdinalIgnoreCase));
+
     private Task HandleAccountNotificationAsync(string method, JsonElement parameters)
     {
         if (!string.Equals(method, "account/login/completed", StringComparison.Ordinal))
@@ -261,13 +338,7 @@ public sealed class CodexAppServerClient : ILlmClient, ICodexSubscriptionService
 
     private static IReadOnlyDictionary<string, CachedCodexModelContext> ReadCachedModelContexts()
     {
-        var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
-        if (string.IsNullOrWhiteSpace(codexHome))
-        {
-            codexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
-        }
-
-        var path = Path.Combine(codexHome, "models_cache.json");
+        var path = Path.Combine(CodexAppHomeDirectory.Ensure(), "models_cache.json");
         if (!File.Exists(path))
         {
             return new Dictionary<string, CachedCodexModelContext>(StringComparer.OrdinalIgnoreCase);
@@ -369,6 +440,7 @@ public interface ICodexSubscriptionService
     Task<CodexAccountStatus> GetAccountStatusAsync(CancellationToken cancellationToken = default);
     Task<CodexLoginStart> StartLoginAsync(CancellationToken cancellationToken = default);
     Task<CodexAccountStatus> WaitForLoginAsync(string loginId, CancellationToken cancellationToken = default);
+    Task<CodexAccountStatus> LogoutAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProviderModelCapability>> GetModelCapabilitiesAsync(CancellationToken cancellationToken = default);
 }
 
@@ -426,6 +498,9 @@ public sealed class LuckyLlmClient : ILlmClient, ICodexSubscriptionService, ICon
 
     public Task<CodexAccountStatus> WaitForLoginAsync(string loginId, CancellationToken cancellationToken = default) =>
         _codex.WaitForLoginAsync(loginId, cancellationToken);
+
+    public Task<CodexAccountStatus> LogoutAsync(CancellationToken cancellationToken = default) =>
+        _codex.LogoutAsync(cancellationToken);
 
     public Task<IReadOnlyList<ProviderModelCapability>> GetModelCapabilitiesAsync(CancellationToken cancellationToken = default) =>
         _codex.GetModelCapabilitiesAsync(cancellationToken);
@@ -1071,10 +1146,206 @@ internal static class CodexRuntimeDirectory
 {
     public static string Ensure()
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Lucky", "CodexRuntime");
+        var root = Path.Combine(CodexProcessDataDirectory.Ensure(), "CodexRuntime");
         Directory.CreateDirectory(root);
         return root;
     }
+}
+
+internal static class CodexAppHomeDirectory
+{
+    private const string ManagedConfig = """
+        # Managed by Lucky. Chat and workspace tools are supplied explicitly by Lucky.
+        cli_auth_credentials_store = "file"
+        web_search = "disabled"
+        check_for_update_on_startup = false
+        history.persistence = "none"
+        allow_login_shell = false
+
+        [features]
+        shell_tool = false
+        apps = false
+        multi_agent = false
+        hooks = false
+        memories = false
+        remote_plugin = false
+        """;
+
+    public static string Ensure()
+    {
+        // Lucky intentionally owns a separate Codex home. Never inherit the user's global
+        // CODEX_HOME/~/.codex account, plugins, MCP servers, hooks, or project configuration.
+        var root = Path.Combine(CodexProcessDataDirectory.Ensure(), "CodexHome");
+        Directory.CreateDirectory(root);
+        var configPath = Path.Combine(root, "config.toml");
+        try
+        {
+            if (!File.Exists(configPath) ||
+                !string.Equals(File.ReadAllText(configPath), ManagedConfig, StringComparison.Ordinal))
+            {
+                File.WriteAllText(configPath, ManagedConfig);
+            }
+
+        }
+        catch (IOException ex)
+        {
+            throw new InvalidOperationException($"Lucky could not prepare its private Codex configuration: {ex.Message}", ex);
+        }
+
+        return root;
+    }
+
+    private static readonly byte[] AuthEntropy = Encoding.UTF8.GetBytes("Lucky.CodexOAuth.v1");
+    private static readonly SemaphoreSlim AuthGate = new(1, 1);
+
+    public static async Task<IAsyncDisposable> MaterializeAuthForProcessAsync(CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Lucky protects ChatGPT credentials with Windows DPAPI.");
+        }
+
+        await AuthGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var root = Ensure();
+            var authPath = Path.Combine(root, "auth.json");
+            var protectedPath = Path.Combine(root, "auth.json.dpapi");
+            if (!File.Exists(authPath) && File.Exists(protectedPath))
+            {
+                var protectedBytes = await File.ReadAllBytesAsync(protectedPath, cancellationToken).ConfigureAwait(false);
+                var clearBytes = ProtectedData.Unprotect(protectedBytes, AuthEntropy, DataProtectionScope.CurrentUser);
+                await File.WriteAllBytesAsync(authPath, clearBytes, cancellationToken).ConfigureAwait(false);
+                CryptographicOperations.ZeroMemory(clearBytes);
+            }
+
+            return new AuthMaterializationLease();
+        }
+        catch
+        {
+            AuthGate.Release();
+            throw;
+        }
+    }
+
+    public static async Task ProtectAuthFileAsync(CancellationToken cancellationToken = default)
+    {
+        await AuthGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ProtectAuthFileCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            AuthGate.Release();
+        }
+    }
+
+    public static async Task ForgetAuthAsync(CancellationToken cancellationToken = default)
+    {
+        await AuthGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var root = Ensure();
+            File.Delete(Path.Combine(root, "auth.json"));
+            File.Delete(Path.Combine(root, "auth.json.dpapi"));
+        }
+        finally
+        {
+            AuthGate.Release();
+        }
+    }
+
+    private static async Task ProtectAuthFileCoreAsync(CancellationToken cancellationToken)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Lucky protects ChatGPT credentials with Windows DPAPI.");
+        }
+
+        var root = Ensure();
+        var authPath = Path.Combine(root, "auth.json");
+        if (!File.Exists(authPath))
+        {
+            return;
+        }
+
+        var clearBytes = await File.ReadAllBytesAsync(authPath, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var protectedBytes = ProtectedData.Protect(clearBytes, AuthEntropy, DataProtectionScope.CurrentUser);
+            var protectedPath = Path.Combine(root, "auth.json.dpapi");
+            var temporaryPath = protectedPath + ".tmp";
+            await File.WriteAllBytesAsync(temporaryPath, protectedBytes, cancellationToken).ConfigureAwait(false);
+            File.Move(temporaryPath, protectedPath, overwrite: true);
+            File.Delete(authPath);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(clearBytes);
+        }
+    }
+
+    private sealed class AuthMaterializationLease : IAsyncDisposable
+    {
+        private int _disposed;
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await ProtectAuthFileCoreAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                AuthGate.Release();
+            }
+        }
+    }
+}
+
+internal static class CodexProcessDataDirectory
+{
+    private const int ErrorInsufficientBuffer = 122;
+
+    public static string Ensure()
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var packageFamily = TryGetCurrentPackageFamilyName();
+        var root = string.IsNullOrWhiteSpace(packageFamily)
+            ? Path.Combine(localAppData, "Lucky")
+            : Path.Combine(localAppData, "Packages", packageFamily, "LocalCache", "Local", "Lucky");
+        Directory.CreateDirectory(root);
+        return root;
+    }
+
+    private static string? TryGetCurrentPackageFamilyName()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        uint length = 0;
+        var first = GetCurrentPackageFamilyName(ref length, null);
+        if (first != ErrorInsufficientBuffer || length == 0)
+        {
+            return null;
+        }
+
+        var value = new StringBuilder((int)length);
+        return GetCurrentPackageFamilyName(ref length, value) == 0
+            ? value.ToString()
+            : null;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetCurrentPackageFamilyName(ref uint packageFamilyNameLength, StringBuilder? packageFamilyName);
 }
 
 internal sealed class CodexAppServerConnection : IAsyncDisposable
@@ -1106,6 +1377,9 @@ internal sealed class CodexAppServerConnection : IAsyncDisposable
 
     public static async Task<CodexAppServerConnection> StartAsync(CancellationToken cancellationToken)
     {
+        await using var authLease = await CodexAppHomeDirectory
+            .MaterializeAuthForProcessAsync(cancellationToken)
+            .ConfigureAwait(false);
         var executable = CodexExecutableLocator.Find();
         if (string.IsNullOrWhiteSpace(executable))
         {
@@ -1116,6 +1390,7 @@ internal sealed class CodexAppServerConnection : IAsyncDisposable
         var startInfo = new ProcessStartInfo
         {
             FileName = executable,
+            WorkingDirectory = CodexRuntimeDirectory.Ensure(),
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -1124,6 +1399,7 @@ internal sealed class CodexAppServerConnection : IAsyncDisposable
         };
         startInfo.ArgumentList.Add("app-server");
         startInfo.ArgumentList.Add("--stdio");
+        startInfo.Environment["CODEX_HOME"] = CodexAppHomeDirectory.Ensure();
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         try
@@ -1155,6 +1431,9 @@ internal sealed class CodexAppServerConnection : IAsyncDisposable
         }
         catch
         {
+            // Release and re-protect the startup credential before disposing the connection;
+            // connection disposal also performs a final protection pass for refreshed tokens.
+            await authLease.DisposeAsync().ConfigureAwait(false);
             await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
@@ -1381,7 +1660,10 @@ internal sealed class CodexAppServerConnection : IAsyncDisposable
     {
         if (IsClosed)
         {
-            throw new InvalidOperationException("The local Codex app-server is not running.");
+            var details = ErrorDetails();
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(details)
+                ? "The local Codex app-server is not running."
+                : $"The local Codex app-server is not running: {details}");
         }
     }
 
@@ -1431,6 +1713,7 @@ internal sealed class CodexAppServerConnection : IAsyncDisposable
         }
 
         await Task.WhenAll(IgnoreFailure(_reader), IgnoreFailure(_errorReader)).ConfigureAwait(false);
+        await CodexAppHomeDirectory.ProtectAuthFileAsync().ConfigureAwait(false);
         _input.Dispose();
         _process.Dispose();
         _writeGate.Dispose();

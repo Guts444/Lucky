@@ -39,6 +39,8 @@ public partial class MainPageViewModel : ObservableObject
     public ObservableCollection<MemoryItemViewModel> Memories { get; } = [];
     public ObservableCollection<ToolTraceItemViewModel> Trace { get; } = [];
     public ObservableCollection<string> AccessLevels { get; } = ["Chat only", "Workspace", "Full access"];
+    public ObservableCollection<string> ProviderSetupOptions { get; } =
+        ["DeepSeek API", "LM Studio", "Custom OpenAI-compatible"];
     public ObservableCollection<ModelOptionViewModel> ModelOptions { get; } = [];
     public ObservableCollection<string> ModelCatalog { get; } = [];
     public ObservableCollection<McpServerItemViewModel> McpServers { get; } = [];
@@ -99,6 +101,15 @@ public partial class MainPageViewModel : ObservableObject
 
     [ObservableProperty]
     public partial bool IsCodexSignInInProgress { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsCodexConnected { get; set; }
+
+    [ObservableProperty]
+    public partial string SelectedProviderSetup { get; set; } = "DeepSeek API";
+
+    [ObservableProperty]
+    public partial bool IsProviderEndpointEditable { get; set; }
 
     [ObservableProperty]
     public partial string SelectedAccessLevel { get; set; } = "Workspace";
@@ -207,6 +218,10 @@ public partial class MainPageViewModel : ObservableObject
         }
 
         _state = await _store.LoadAsync(cancellationToken).ConfigureAwait(true);
+        if (!string.IsNullOrWhiteSpace(_state.Settings.OpenAiCodex.ConnectedAccountPlan))
+        {
+            await RefreshCodexAccountStatusAsync(cancellationToken).ConfigureAwait(true);
+        }
         HydrateSettings();
         RefreshModelOptions();
         ReloadProjects();
@@ -286,6 +301,9 @@ public partial class MainPageViewModel : ObservableObject
         session.Messages.Add(userMessage);
         TouchSession(session, text);
         Messages.Add(MessageItemViewModel.From(userMessage));
+        // Persist the user's turn before any provider/network work. A crash or malformed
+        // response must not silently lose the prompt the user already sent.
+        await _store.SaveAsync(_state).ConfigureAwait(true);
         var assistantItem = MessageItemViewModel.PendingAssistant();
         assistantItem.IsThinking = true;
         assistantItem.ThinkingVisibility = Visibility.Visible;
@@ -297,6 +315,8 @@ public partial class MainPageViewModel : ObservableObject
         Status = "Lucky is thinking...";
         using var turnCancellation = new CancellationTokenSource();
         _activeTurnCancellation = turnCancellation;
+        var turnProvider = _state.Settings.ActiveProvider;
+        var turnModel = _state.Settings.ActiveProviderSettings.Model;
 
         try
         {
@@ -350,7 +370,7 @@ public partial class MainPageViewModel : ObservableObject
                 TotalTokens = result.TokenUsage?.TotalTokens,
                 ContextTokens = result.TokenUsage?.ContextTokens,
                 ContextWindowTokens = result.TokenUsage?.ContextWindowTokens,
-                ProviderKind = _state.Settings.ActiveProvider,
+                ProviderKind = turnProvider,
                 ModelId = result.Model
             };
             session.Messages.Add(assistant);
@@ -394,6 +414,30 @@ public partial class MainPageViewModel : ObservableObject
             await _store.SaveAsync(_state).ConfigureAwait(true);
             RefreshDerivedState();
             Status = "Stopped the current turn.";
+        }
+        catch (Exception ex)
+        {
+            assistantItem.IsThinking = false;
+            assistantItem.ThinkingText = RenderThinkingText(
+                assistantItem.ThinkingText,
+                [],
+                reasoningContent: null);
+            assistantItem.ThinkingVisibility = string.IsNullOrWhiteSpace(assistantItem.ThinkingText)
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+            assistantItem.Content = $"I couldn't finish that turn: {ex.Message}";
+            session.Messages.Add(new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                Content = assistantItem.Content,
+                Trace = assistantItem.ThinkingText,
+                ProviderKind = turnProvider,
+                ModelId = turnModel
+            });
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            await _store.SaveAsync(_state).ConfigureAwait(true);
+            RefreshDerivedState();
+            Status = "The turn failed. Check the provider settings and try again.";
         }
         finally
         {
@@ -538,6 +582,13 @@ public partial class MainPageViewModel : ObservableObject
             return;
         }
 
+        if (ConfiguredProviderKind() != LlmProviderKind.DeepSeek &&
+            !IsSafeProviderEndpoint(ProviderEndpoint, ConfiguredProviderKind()))
+        {
+            Status = "Use HTTPS for remote providers. Plain HTTP is allowed only for loopback local endpoints.";
+            return;
+        }
+
         ApplySettings();
         await _store.SaveAsync(_state).ConfigureAwait(true);
         ApiKeyInput = "";
@@ -618,11 +669,12 @@ public partial class MainPageViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void OpenSettings()
+    private async Task OpenSettingsAsync()
     {
         IsSettingsOpen = true;
         RefreshModeVisibility();
         Status = "Settings opened.";
+        await RefreshCodexAccountStatusAsync().ConfigureAwait(true);
     }
 
     [RelayCommand]
@@ -637,12 +689,8 @@ public partial class MainPageViewModel : ObservableObject
     private async Task RefreshModelsAsync()
     {
         ApplySettings();
-        var provider = _state.Settings.ActiveProviderSettings;
-        if (provider.Transport == ProviderTransport.CodexAppServer)
-        {
-            await RefreshCodexModelsAsync(saveState: false).ConfigureAwait(true);
-            return;
-        }
+        var provider = ConfiguredProvider();
+        var providerKind = ConfiguredProviderKind();
 
         var apiKey = CredentialProtector.Unprotect(provider.EncryptedApiKey);
         if (provider.RequiresApiKey && string.IsNullOrWhiteSpace(apiKey))
@@ -661,15 +709,24 @@ public partial class MainPageViewModel : ObservableObject
                 ModelCatalog.Add(model);
             }
 
+            provider.ModelCapabilities = models.Select(model => new ProviderModelCapability
+            {
+                Id = model,
+                DisplayName = model,
+                Description = $"{provider.DisplayName} model",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = provider.ContextWindowTokens
+            }).ToList();
             if (models.Count > 0 && !models.Contains(provider.Model, StringComparer.OrdinalIgnoreCase) &&
-                _state.Settings.ActiveProvider != LlmProviderKind.DeepSeek)
+                providerKind != LlmProviderKind.DeepSeek)
             {
                 provider.Model = models[0];
             }
 
-            ApplyKnownProviderCapabilities();
             RefreshModelOptions();
-            HydrateProviderFields(_state.Settings.ActiveProviderSettings);
+            HydrateProviderFields(provider);
+            await _store.SaveAsync(_state).ConfigureAwait(true);
 
             Status = models.Count == 0
                 ? "Connection ok, but no models were returned."
@@ -715,6 +772,7 @@ public partial class MainPageViewModel : ObservableObject
             var account = await _modelClient.WaitForLoginAsync(login.LoginId, cancellationToken).ConfigureAwait(true);
             var provider = _state.Settings.OpenAiCodex;
             provider.ConnectedAccountPlan = account.Plan;
+            IsCodexConnected = account.IsChatGptConnected;
             CodexConnectionStatus = account.Detail;
             await RefreshCodexModelsAsync(saveState: true).ConfigureAwait(true);
             Status = $"{account.Detail} Codex models are ready.";
@@ -735,28 +793,118 @@ public partial class MainPageViewModel : ObservableObject
         }
     }
 
-    private async Task RefreshCodexModelsAsync(bool saveState)
+    [RelayCommand]
+    private async Task DisconnectCodexAsync()
     {
+        if (!IsCodexConnected)
+        {
+            return;
+        }
+
         IsBusy = true;
         try
         {
-            var account = await _modelClient.GetAccountStatusAsync().ConfigureAwait(true);
+            var account = await _modelClient.LogoutAsync().ConfigureAwait(true);
+            var provider = _state.Settings.OpenAiCodex;
+            provider.ConnectedAccountPlan = null;
+            provider.ModelCapabilities.Clear();
+            if (_state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex)
+            {
+                _state.Settings.ActiveProvider = LlmProviderKind.DeepSeek;
+            }
+            IsCodexConnected = account.IsChatGptConnected;
+            CodexConnectionStatus = "Disconnected. Lucky's ChatGPT sign-in is separate from Codex and other apps.";
+            RefreshModelOptions();
+            await _store.SaveAsync(_state).ConfigureAwait(true);
+            Status = "Disconnected ChatGPT from Lucky.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException or IOException)
+        {
+            Status = $"Could not disconnect ChatGPT: {ex.Message}";
+            CodexConnectionStatus = Status;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    [RelayCommand]
+    private Task RefreshCodexSubscriptionAsync() => RefreshCodexModelsAsync(saveState: true);
+
+    private async Task RefreshCodexAccountStatusAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var account = await _modelClient.GetAccountStatusAsync(cancellationToken).ConfigureAwait(true);
+            IsCodexConnected = account.IsChatGptConnected;
+            var provider = _state.Settings.OpenAiCodex;
+            provider.ConnectedAccountPlan = account.IsChatGptConnected ? account.Plan : null;
+            CodexConnectionStatus = account.IsChatGptConnected
+                ? $"{account.Detail} Credentials are protected with Windows DPAPI and isolated from Codex CLI."
+                : "Not connected. Sign in in your browser; Lucky keeps this account separate from Codex and other apps.";
+            if (!account.IsChatGptConnected)
+            {
+                provider.ModelCapabilities.Clear();
+                if (_state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex)
+                {
+                    _state.Settings.ActiveProvider = LlmProviderKind.DeepSeek;
+                }
+            }
+
+            RefreshModelOptions();
+            await _store.SaveAsync(_state, cancellationToken).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException or IOException)
+        {
+            IsCodexConnected = false;
+            _state.Settings.OpenAiCodex.ConnectedAccountPlan = null;
+            CodexConnectionStatus = $"ChatGPT connection unavailable: {ex.Message}";
+        }
+    }
+
+    private async Task RefreshCodexModelsAsync(bool saveState)
+    {
+        IsBusy = true;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            var account = await _modelClient.GetAccountStatusAsync(timeout.Token).ConfigureAwait(true);
             var provider = _state.Settings.OpenAiCodex;
             provider.ConnectedAccountPlan = account.Plan;
+            IsCodexConnected = account.IsChatGptConnected;
             CodexConnectionStatus = account.Detail;
             if (!account.IsChatGptConnected)
             {
+                provider.ModelCapabilities.Clear();
+                if (_state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex)
+                {
+                    _state.Settings.ActiveProvider = LlmProviderKind.DeepSeek;
+                }
+
+                RefreshModelOptions();
+                HydrateProviderFields(_state.Settings.ActiveProviderSettings);
+                RefreshProviderConfigurationVisibility();
+                if (saveState)
+                {
+                    await _store.SaveAsync(_state, timeout.Token).ConfigureAwait(true);
+                }
+
                 Status = "Connect ChatGPT in Settings before loading Codex subscription models.";
                 return;
             }
 
-            var capabilities = await _modelClient.GetModelCapabilitiesAsync().ConfigureAwait(true);
-            provider.ModelCapabilities = capabilities.Select(CloneModelCapability).ToList();
-            if (provider.ModelCapabilities.Count == 0)
+            var capabilities = await _modelClient.GetModelCapabilitiesAsync(timeout.Token).ConfigureAwait(true);
+            var refreshedCapabilities = capabilities.Select(CloneModelCapability).ToList();
+            if (refreshedCapabilities.Count == 0)
             {
-                Status = "ChatGPT is connected, but Codex did not return any models for this account.";
+                Status = provider.ModelCapabilities.Count == 0
+                    ? "ChatGPT is connected, but Codex did not return any models for this account."
+                    : "Codex returned an empty model catalog; Lucky kept the last working catalog.";
                 return;
             }
+
+            provider.ModelCapabilities = refreshedCapabilities;
 
             var selected = provider.ModelCapabilities.FirstOrDefault(model =>
                 string.Equals(model.Id, provider.Model, StringComparison.OrdinalIgnoreCase))
@@ -777,11 +925,14 @@ public partial class MainPageViewModel : ObservableObject
                 await _store.SaveAsync(_state).ConfigureAwait(true);
             }
 
+            CodexConnectionStatus = $"{account.Detail} Loaded {provider.ModelCapabilities.Count} model(s) advertised for this Lucky sign-in.";
             Status = $"Loaded {provider.ModelCapabilities.Count} Codex model(s), context {CompactNumber(provider.ContextWindowTokens)}.";
         }
         catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException or IOException)
         {
-            Status = $"Could not refresh Codex models: {ex.Message}";
+            Status = ex is TaskCanceledException
+                ? "Could not refresh Codex models within 30 seconds. The previous catalog was kept."
+                : "Could not refresh Codex models. The previous catalog was kept; reconnect the account if this continues.";
             CodexConnectionStatus = Status;
         }
         finally
@@ -867,6 +1018,17 @@ public partial class MainPageViewModel : ObservableObject
         RefreshDerivedState();
     }
 
+    partial void OnSelectedProviderSetupChanged(string value)
+    {
+        if (_isHydratingSettings || !IsInitialized)
+        {
+            return;
+        }
+
+        ApiKeyInput = "";
+        HydrateProviderFields(ConfiguredProvider());
+    }
+
     partial void OnContextWindowTokensChanged(int value)
     {
         if (_isHydratingSettings)
@@ -879,7 +1041,7 @@ public partial class MainPageViewModel : ObservableObject
             return;
         }
 
-        _state.Settings.ActiveProviderSettings.ContextWindowTokens = Math.Max(1024, value);
+        ConfiguredProvider().ContextWindowTokens = Math.Max(1024, value);
         RefreshDerivedState();
     }
 
@@ -914,7 +1076,7 @@ public partial class MainPageViewModel : ObservableObject
             AutoDelegateEnabled = _state.Settings.Subagents.AutoDelegateEnabled;
             MaxParallelSubagents = _state.Settings.Subagents.MaxParallelAgents;
             MaxSubagentsPerTurn = _state.Settings.Subagents.MaxAgentsPerTurn;
-            HydrateProviderFields(_state.Settings.ActiveProviderSettings);
+            HydrateProviderFields(ConfiguredProvider());
         }
         finally
         {
@@ -939,18 +1101,14 @@ public partial class MainPageViewModel : ObservableObject
 
     private void RefreshProviderConfigurationVisibility()
     {
-        var isCodex = _state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex;
-        ProviderEndpointVisibility = isCodex ? Visibility.Collapsed : Visibility.Visible;
-        ApiKeyVisibility = isCodex ? Visibility.Collapsed : Visibility.Visible;
-        CodexConnectionVisibility = isCodex ? Visibility.Visible : Visibility.Collapsed;
-        IsContextWindowEditable = !isCodex;
-        if (isCodex)
-        {
-            var plan = _state.Settings.OpenAiCodex.ConnectedAccountPlan;
-            CodexConnectionStatus = string.IsNullOrWhiteSpace(plan)
-                ? "Connect your ChatGPT account to use the Codex models included with your plan."
-                : $"Connected to ChatGPT {plan}. Refresh models to update what this account can use.";
-        }
+        var kind = ConfiguredProviderKind();
+        ProviderEndpointVisibility = Visibility.Visible;
+        ApiKeyVisibility = kind is LlmProviderKind.DeepSeek or LlmProviderKind.CustomOpenAiCompatible
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        CodexConnectionVisibility = Visibility.Collapsed;
+        IsContextWindowEditable = true;
+        IsProviderEndpointEditable = kind != LlmProviderKind.DeepSeek;
     }
 
     private void RefreshModelOptions()
@@ -995,38 +1153,31 @@ public partial class MainPageViewModel : ObservableObject
             true,
             1000000));
 
-        var localLabel = string.IsNullOrWhiteSpace(_state.Settings.LmStudio.Model)
-            ? "LM Studio · Local model"
-            : $"LM Studio · {_state.Settings.LmStudio.Model}";
-        ModelOptions.Add(new ModelOptionViewModel(
-            $"lmstudio|{_state.Settings.LmStudio.Model}",
-            localLabel,
-            "Local OpenAI-compatible model",
-            LlmProviderKind.LmStudio,
-            _state.Settings.LmStudio.Model,
-            "none",
-            false,
-            _state.Settings.LmStudio.ContextWindowTokens));
+        AddDiscoveredProviderOptions(_state.Settings.LmStudio, LlmProviderKind.LmStudio, "LM Studio", "lmstudio");
+        AddDiscoveredProviderOptions(_state.Settings.Custom, LlmProviderKind.CustomOpenAiCompatible, "Custom", "custom");
 
-        foreach (var capability in _state.Settings.OpenAiCodex.ModelCapabilities
-                     .OrderByDescending(model => model.IsDefault)
-                     .ThenBy(model => model.DisplayName, StringComparer.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(_state.Settings.OpenAiCodex.ConnectedAccountPlan))
         {
-            var efforts = capability.ReasoningEfforts.Count == 0
-                ? [capability.DefaultReasoningEffort]
-                : capability.ReasoningEfforts;
-            foreach (var effort in efforts)
+            foreach (var capability in _state.Settings.OpenAiCodex.ModelCapabilities
+                         .OrderByDescending(model => model.IsDefault)
+                         .ThenBy(model => model.DisplayName, StringComparer.OrdinalIgnoreCase))
             {
-                var displayEffort = FormatReasoningEffort(effort);
-                ModelOptions.Add(new ModelOptionViewModel(
-                    $"codex|{capability.Id}|{effort}",
-                    $"OpenAI Codex · {capability.DisplayName} · {displayEffort}",
-                    $"{capability.Description} · {CompactNumber(capability.ContextWindowTokens)} input context",
-                    LlmProviderKind.OpenAiCodex,
-                    capability.Id,
-                    effort,
-                    true,
-                    capability.ContextWindowTokens));
+                var efforts = capability.ReasoningEfforts.Count == 0
+                    ? [capability.DefaultReasoningEffort]
+                    : capability.ReasoningEfforts;
+                foreach (var effort in efforts)
+                {
+                    var displayEffort = FormatReasoningEffort(effort);
+                    ModelOptions.Add(new ModelOptionViewModel(
+                        $"codex|{capability.Id}|{effort}",
+                        $"OpenAI Codex · {capability.DisplayName} · {displayEffort}",
+                        $"{capability.Description} · {CompactNumber(capability.ContextWindowTokens)} input context",
+                        LlmProviderKind.OpenAiCodex,
+                        capability.Id,
+                        effort,
+                        true,
+                        capability.ContextWindowTokens));
+                }
             }
         }
 
@@ -1037,7 +1188,7 @@ public partial class MainPageViewModel : ObservableObject
                 ? $"lmstudio|{active.Model}"
                 : _state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex
                     ? $"codex|{active.Model}|{active.ReasoningEffort}"
-                : previousKey;
+                    : $"custom|{active.Model}";
 
         _isHydratingSettings = true;
         try
@@ -1049,6 +1200,29 @@ public partial class MainPageViewModel : ObservableObject
         finally
         {
             _isHydratingSettings = false;
+        }
+    }
+
+    private void AddDiscoveredProviderOptions(
+        ProviderSettings provider,
+        LlmProviderKind kind,
+        string label,
+        string keyPrefix)
+    {
+        var models = provider.ModelCapabilities.Count > 0
+            ? provider.ModelCapabilities.Select(capability => capability.Id)
+            : [provider.Model];
+        foreach (var model in models.Where(model => !string.IsNullOrWhiteSpace(model)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            ModelOptions.Add(new ModelOptionViewModel(
+                $"{keyPrefix}|{model}",
+                $"{label} · {model}",
+                kind == LlmProviderKind.LmStudio ? "Local model" : "Custom OpenAI-compatible model",
+                kind,
+                model,
+                "none",
+                false,
+                provider.ContextWindowTokens));
         }
     }
 
@@ -1096,10 +1270,12 @@ public partial class MainPageViewModel : ObservableObject
         _state.Settings.Subagents.MaxParallelAgents = Math.Clamp(MaxParallelSubagents, 1, 12);
         _state.Settings.Subagents.MaxAgentsPerTurn = Math.Clamp(MaxSubagentsPerTurn, 0, 12);
 
-        var provider = _state.Settings.ActiveProviderSettings;
+        var provider = ConfiguredProvider();
         if (provider.Transport != ProviderTransport.CodexAppServer)
         {
-            provider.BaseUrl = ProviderEndpoint.Trim();
+            provider.BaseUrl = ConfiguredProviderKind() == LlmProviderKind.DeepSeek
+                ? "https://api.deepseek.com"
+                : ProviderEndpoint.Trim();
         }
 
         provider.ContextWindowTokens = Math.Max(1024, ContextWindowTokens);
@@ -1108,6 +1284,38 @@ public partial class MainPageViewModel : ObservableObject
         {
             provider.EncryptedApiKey = CredentialProtector.Protect(ApiKeyInput.Trim());
         }
+    }
+
+    private LlmProviderKind ConfiguredProviderKind() => SelectedProviderSetup switch
+    {
+        "LM Studio" => LlmProviderKind.LmStudio,
+        "Custom OpenAI-compatible" => LlmProviderKind.CustomOpenAiCompatible,
+        _ => LlmProviderKind.DeepSeek
+    };
+
+    private ProviderSettings ConfiguredProvider() => ConfiguredProviderKind() switch
+    {
+        LlmProviderKind.LmStudio => _state.Settings.LmStudio,
+        LlmProviderKind.CustomOpenAiCompatible => _state.Settings.Custom,
+        _ => _state.Settings.DeepSeek
+    };
+
+    private static bool IsSafeProviderEndpoint(string value, LlmProviderKind kind)
+    {
+        if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Scheme == Uri.UriSchemeHttps)
+        {
+            return true;
+        }
+
+        return uri.Scheme == Uri.UriSchemeHttp &&
+               (uri.IsLoopback ||
+                string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                kind == LlmProviderKind.LmStudio && uri.Host == "127.0.0.1");
     }
 
     private void ApplyKnownProviderCapabilities()

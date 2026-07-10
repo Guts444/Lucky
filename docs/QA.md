@@ -17,20 +17,22 @@ dotnet build src\Lucky.App\Lucky.App.csproj -p:Platform=x64
 dotnet test Lucky.slnx
 ```
 
-Latest verified results:
+Latest verified results (2026-07-10):
 
 - WinUI x64 app build passed with 0 warnings and 0 errors.
-- xUnit passed 105/105 tests, including streamed answer deltas, bounded parent/child tool-call batches, loop finalization and cancellation, input-context versus aggregate-usage accounting, unified patching, PowerShell timeout/cancellation reporting, trusted page reading, MCP DPAPI persistence and protocol-frame bounds, Docker sandbox policy, memory controls, ChatOnly context filtering, Codex provider defaults, and subagent trust inheritance.
+- Debug and Release solution builds passed with 0 warnings and 0 errors.
+- xUnit passed 110/110 tests, including DeepSeek V4 compatibility payloads, native and textual DSML tool calls, suppression of streamed and legacy protocol markup, regex-timeout tool errors, streamed answer deltas, bounded tool loops, persistence, sandboxing, memory, and Codex defaults.
 - Computer Use visual QA launched Lucky and verified the Codex-like shell renders with the glassy project/history rail, darker chat workspace, centered empty state, rounded bottom composer, a single model/reasoning picker, access control, and a `0/1M` DeepSeek context meter.
 - Computer Use visual QA launched the patched x64 build and verified right-aligned user messages no longer show a visible `You` label, the user timestamp sits at the bottom of the bubble, assistant output stays left-aligned, the expander label is `Thinking`, and the Xbox answer no longer renders raw `##`, `###`, `---`, or stray bold markers.
 - Computer Use visual QA verified assistant canvas text can be drag-selected for copy, with Windows reporting selected text from the chat answer.
 - Computer Use visual QA verified the composer uses responsive max-width constraints and the usage meter now sits inside the composer instead of as a bottom-right overlay. Direct edge/corner resize drags were ignored by Windows during this pass, so narrow-width behavior was validated by code constraints plus the previously problematic composer no longer clipping in the captured available canvas.
 - Computer Use visual QA verified Settings only opens from the bottom-left profile row, the top-right settings button is absent, subscription/plus copy is absent, and the composer no longer shows stray `Settings` text.
-- Computer Use visual QA opened Settings and verified the trimmed settings navigation, General/work-mode cards, combined DeepSeek/LM Studio model picker, endpoint, 1,000,000-token context field, permissions, personalization, memory, and SearXNG sections render without overlap.
+- Computer Use visual QA opened Settings and verified Providers is split into Subscription accounts and API & local providers, the settings model picker and decorative work-mode cards are gone, and provider editing does not change the chat composer selection.
 - Computer Use visual QA opened Settings after the subagent update and verified the new Subagents card renders cleanly with enable/auto-delegate toggles, max parallel/per-turn number boxes, custom-agent path text, Save button, and no overlap with adjacent sections.
 - Computer Use visual QA launched the current x64 build through `dotnet run`, opened Settings, scrolled to Memory, and verified the `Enable memories` toggle renders cleanly and flips off/on with the expected labels.
 - DeepSeek API smoke test used the protected saved key and received `flash-ok` from `deepseek-v4-flash` and `pro-ok` from `deepseek-v4-pro`.
 - Computer Use sent an end-to-end Lucky composer prompt through DeepSeek V4 Flash and verified the assistant response rendered in the chat canvas as `lucky-ui-ok`.
+- Computer Use sent a live DeepSeek V4 Pro prompt that required `project.read_file`; the Thinking trace showed `project.read_file done: Read README.md`, the assistant returned clean `live-tool-ok # Hanna Telegram Bot`, and no DSML markup appeared.
 - DeepSeek agent-tool smoke test used a temporary project folder. `deepseek-v4-flash` streamed answer chunks while reading `README.md` through `project.read_file`; `deepseek-v4-pro` streamed answer chunks while using `project.read_file` and `project.edit_file` to change `before edit` to `after edit`.
 - Computer Use visual QA verified the current x64 build auto-scrolls the chat canvas to the latest loaded messages, including the `lucky-autoscroll-fixed` and `say ok` responses, when launched with `dotnet run -p:Platform=x64`.
 - Computer Use visual QA rebuilt and launched the current debug app through `dotnet run`, verified the normal rail/history, chat canvas, Full access selector, composer, and new-chat empty state render without overlap or clipping.
@@ -44,10 +46,14 @@ Latest verified results:
 - DeepSeek: `deepseek-v4-flash` and `deepseek-v4-pro` both work with Lucky's thinking payload and reasoning effort.
 - DeepSeek thinking mode sends `thinking` and `reasoning_effort`; portable providers do not receive DeepSeek-only fields.
 - DeepSeek reasoning text appears inside the message's `Thinking` expander when `reasoning_content` is returned.
+- DeepSeek V4 thinking requests omit `tool_choice`, replay `reasoning_content` on assistant tool-call messages, convert recognized textual DSML into validated tool calls, and never report DSML fragments as answer deltas.
 - Provider token usage keeps combined prompt/completion totals for the turn, while the chat meter uses the latest provider-reported input context only for the matching active provider/model; unsupported providers or a model switch show a `~` local estimate instead of presenting it as exact.
 - DeepSeek v4 saved states with stale 131K context values migrate to a 1,000,000-token context meter.
-- OpenAI Codex: with the official Codex CLI installed, select an OpenAI Codex picker entry, choose **Connect ChatGPT**, and complete the browser OAuth flow. Confirm Lucky never asks for or displays a token, the connection reports the ChatGPT plan, and the saved Lucky state has no OAuth credential field.
-- OpenAI Codex: choose **Refresh models** and confirm only models returned for the signed-in account appear, with every advertised reasoning effort in its catalog order. Confirm the displayed input context comes from Codex metadata and is locked against manual override.
+- OpenAI Codex: under Settings > Providers, choose **Connect** and complete the browser OAuth flow. Confirm the opened URI is HTTPS, Lucky never asks for or displays a token, the saved Lucky state has no OAuth credential field, and the isolated Codex home contains `auth.json.dpapi` rather than plaintext `auth.json` after sign-in and after an app restart.
+- OpenAI Codex: confirm `%LOCALAPPDATA%\Lucky\CodexHome` is used and that an account logged into the global Codex CLI does not make a fresh Lucky home appear connected. Browser cookies may still recognize the browser user.
+- OpenAI Codex: choose **Disconnect**, confirm subscription models disappear from the composer, then reconnect and use **Refresh account models** to repopulate only the signed-in account's advertised models/efforts.
+- OpenAI Codex: while connected, use **Refresh account models** repeatedly. Confirm the existing authenticated app-server is reused, no second sign-in begins, and no `git.exe` or child-process application-error dialog appears.
+- OpenAI Codex: compare the composer catalog with the official `model/list` response for the isolated Lucky home. Confirm visible entries are present in advertised order and that models found only in another app/global Codex cache are not injected.
 - OpenAI Codex: run a Workspace prompt that asks to list project files. Confirm the model invokes Lucky's visible `project.list_files` trace rather than a native Codex command, then confirm the reply streams and the meter reflects the provider-reported input context.
 - Custom provider: base URL, model, and API-key requirement are respected.
 - Provider errors produce user-facing messages that include enough detail to fix configuration without exposing secrets.
@@ -93,6 +99,9 @@ Latest verified results:
 
 ## Composer and Scroll Checks
 
+- Focus and unfocus the composer. Confirm the outer rounded surface remains one tone and the editable area does not gain a separate rectangular background or border.
+- Confirm the access and model selectors render as compact rounded controls and the Stop/Send actions remain circular, aligned, and usable at the minimum supported window width.
+- On a project's empty state, select the displayed working-folder path. Confirm the folder picker opens and choosing a different folder follows the standard add/select-project flow.
 - Type a message taller than the composer. Confirm the text box grows to its cap, exposes an internal vertical scrollbar, and its bottom line remains reachable. Enter inserts a line break; Ctrl+Enter and Send submit the message.
 - During a streaming response, scroll upward with the mouse wheel. Confirm Lucky stops forcing the canvas to the bottom. Scroll back to the latest message, then confirm follow-latest resumes for new streamed content.
 - Sandbox is off by default. With it off, with an empty image, or below `FullAccess`, `sandbox_execute` is not registered with the model and no Docker command runs.
