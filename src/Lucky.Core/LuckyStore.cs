@@ -126,6 +126,59 @@ public sealed class LuckyStore
             state.Settings.Custom.ContextWindowTokens = 32768;
         }
 
+        state.Settings.OpenAiCodex ??= new AppSettings().OpenAiCodex;
+        var codex = state.Settings.OpenAiCodex;
+        codex.DisplayName = "OpenAI Codex";
+        codex.Transport = ProviderTransport.CodexAppServer;
+        codex.RequiresApiKey = false;
+        codex.SupportsThinking = true;
+        codex.ThinkingEnabled = true;
+        codex.ModelCapabilities ??= [];
+        codex.ModelCapabilities = codex.ModelCapabilities
+            .Where(model => !string.IsNullOrWhiteSpace(model.Id))
+            .GroupBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Select(model =>
+            {
+                model.DisplayName = string.IsNullOrWhiteSpace(model.DisplayName) ? model.Id : model.DisplayName.Trim();
+                model.Description ??= "Codex subscription model";
+                model.ReasoningEfforts ??= [];
+                model.ReasoningEfforts = model.ReasoningEfforts
+                    .Where(effort => !string.IsNullOrWhiteSpace(effort))
+                    .Select(effort => effort.Trim().ToLowerInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                model.DefaultReasoningEffort = string.IsNullOrWhiteSpace(model.DefaultReasoningEffort)
+                    ? model.ReasoningEfforts.FirstOrDefault() ?? "medium"
+                    : model.DefaultReasoningEffort.Trim().ToLowerInvariant();
+                if (model.ReasoningEfforts.Count == 0)
+                {
+                    model.ReasoningEfforts.Add(model.DefaultReasoningEffort);
+                }
+
+                model.ContextWindowTokens = Math.Max(1024,
+                    model.ContextWindowTokens > 0
+                        ? model.ContextWindowTokens
+                        : CodexModelContextDefaults.For(model.Id));
+                return model;
+            })
+            .ToList();
+        if (codex.ModelCapabilities.Count == 0)
+        {
+            codex.ModelCapabilities = new AppSettings().OpenAiCodex.ModelCapabilities;
+        }
+
+        var selectedCodexModel = codex.ModelCapabilities.FirstOrDefault(model =>
+            string.Equals(model.Id, codex.Model, StringComparison.OrdinalIgnoreCase))
+            ?? codex.ModelCapabilities.FirstOrDefault(model => model.IsDefault)
+            ?? codex.ModelCapabilities[0];
+        codex.Model = selectedCodexModel.Id;
+        codex.ContextWindowTokens = selectedCodexModel.ContextWindowTokens;
+        if (!selectedCodexModel.ReasoningEfforts.Contains(codex.ReasoningEffort, StringComparer.OrdinalIgnoreCase))
+        {
+            codex.ReasoningEffort = selectedCodexModel.DefaultReasoningEffort;
+        }
+
         if (state.Settings.MemoryCharLimit <= 0)
         {
             state.Settings.MemoryCharLimit = 2200;

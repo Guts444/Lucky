@@ -14,7 +14,7 @@ public sealed class SubagentCoordinator
         IProjectFileToolService? projectFileTools = null,
         IProjectTerminalToolService? projectTerminalTools = null)
     {
-        _llmClient = llmClient ?? new OpenAiCompatibleClient();
+        _llmClient = llmClient ?? new LuckyLlmClient();
         _projectFileTools = projectFileTools ?? new ProjectFileToolService();
         _projectTerminalTools = projectTerminalTools ?? new ProjectTerminalToolService();
     }
@@ -121,6 +121,9 @@ internal sealed class SubagentRunner
         string? context,
         CancellationToken cancellationToken)
     {
+        using var conversationScope = _llmClient is IConversationScopedLlmClient scopedClient
+            ? scopedClient.BeginConversationScope()
+            : null;
         var trace = new List<ToolTraceEntry>();
         var provider = CopyProvider(parentProvider, definition);
         var messages = BuildMessages(settings, project, definition, instructions, task, context);
@@ -259,6 +262,7 @@ internal sealed class SubagentRunner
             DisplayName = provider.DisplayName,
             BaseUrl = provider.BaseUrl,
             Model = string.IsNullOrWhiteSpace(definition.ModelOverride) ? provider.Model : definition.ModelOverride,
+            Transport = provider.Transport,
             RequiresApiKey = provider.RequiresApiKey,
             EncryptedApiKey = provider.EncryptedApiKey,
             SupportsThinking = provider.SupportsThinking,
@@ -266,7 +270,20 @@ internal sealed class SubagentRunner
             ReasoningEffort = string.IsNullOrWhiteSpace(definition.ReasoningEffortOverride)
                 ? provider.ReasoningEffort
                 : definition.ReasoningEffortOverride,
-            ContextWindowTokens = provider.ContextWindowTokens
+            ContextWindowTokens = provider.ContextWindowTokens,
+            ModelCapabilities = provider.ModelCapabilities
+                .Select(capability => new ProviderModelCapability
+                {
+                    Id = capability.Id,
+                    DisplayName = capability.DisplayName,
+                    Description = capability.Description,
+                    ReasoningEfforts = [.. capability.ReasoningEfforts],
+                    DefaultReasoningEffort = capability.DefaultReasoningEffort,
+                    ContextWindowTokens = capability.ContextWindowTokens,
+                    IsDefault = capability.IsDefault
+                })
+                .ToList(),
+            ConnectedAccountPlan = provider.ConnectedAccountPlan
         };
     }
 
@@ -600,7 +617,9 @@ internal sealed class SubagentRunner
         return new LlmTokenUsage(
             AddNullable(left.PromptTokens, right.PromptTokens),
             AddNullable(left.CompletionTokens, right.CompletionTokens),
-            AddNullable(left.TotalTokens, right.TotalTokens));
+            AddNullable(left.TotalTokens, right.TotalTokens),
+            right.ContextTokens ?? left.ContextTokens,
+            right.ContextWindowTokens ?? left.ContextWindowTokens);
 
         static int? AddNullable(int? a, int? b) => a.HasValue || b.HasValue
             ? (a ?? 0) + (b ?? 0)

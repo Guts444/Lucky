@@ -16,11 +16,11 @@ public sealed class AgentRunnerToolLoopTests
                     "",
                     "fake",
                     [new ToolCallRequest("call_1", "project_read_file", """{"path":"README.md"}""")],
-                    Usage: new LlmTokenUsage(10, 2, 12)),
+                    Usage: new LlmTokenUsage(10, 2, 12, ContextTokens: 10)),
                 new LlmResponse(
                     "I read README.md: Lucky can read this.",
                     "fake",
-                    Usage: new LlmTokenUsage(18, 7, 25)));
+                    Usage: new LlmTokenUsage(18, 7, 25, ContextTokens: 18)));
             var runner = new AgentRunner(client);
 
             var result = await runner.RunTurnAsync(state, project, session, "read your README");
@@ -30,6 +30,7 @@ public sealed class AgentRunnerToolLoopTests
             Assert.Equal(2, client.Requests.Count);
             Assert.Contains(client.Requests[0].Tools, tool => tool.Name == "project_read_file");
             Assert.Equal(37, result.TokenUsage?.TotalTokens);
+            Assert.Equal(18, result.TokenUsage?.ContextTokens);
         }
         finally
         {

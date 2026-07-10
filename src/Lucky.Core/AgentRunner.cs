@@ -33,7 +33,7 @@ public sealed class AgentRunner
         IMcpToolService? mcpToolService = null,
         ICodeExecutionSandboxService? codeExecutionSandbox = null)
     {
-        _llmClient = llmClient ?? new OpenAiCompatibleClient();
+        _llmClient = llmClient ?? new LuckyLlmClient();
         _webSearchClient = webSearchClient ?? new SearxngSearchClient();
         _memoryService = memoryService ?? new MemoryService();
         _projectFileTools = projectFileTools ?? new ProjectFileToolService();
@@ -148,6 +148,9 @@ public sealed class AgentRunner
                 workspaceProject,
                 activeSubagents,
                 mcpSession?.Tools ?? []);
+            using var conversationScope = _llmClient is IConversationScopedLlmClient scopedClient
+                ? scopedClient.BeginConversationScope()
+                : null;
             var response = await RunToolLoopAsync(
                 state.Settings,
                 workspaceProject,
@@ -178,8 +181,9 @@ public sealed class AgentRunner
                 recalled,
                 captured,
                 UsedModel: true,
-                response.ReasoningContent,
-                response.Usage);
+                ReasoningContent: response.ReasoningContent,
+                TokenUsage: response.Usage,
+                Model: response.Model);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -512,7 +516,9 @@ public sealed class AgentRunner
         return new LlmTokenUsage(
             AddNullable(left.PromptTokens, right.PromptTokens),
             AddNullable(left.CompletionTokens, right.CompletionTokens),
-            AddNullable(left.TotalTokens, right.TotalTokens));
+            AddNullable(left.TotalTokens, right.TotalTokens),
+            right.ContextTokens ?? left.ContextTokens,
+            right.ContextWindowTokens ?? left.ContextWindowTokens);
 
         static int? AddNullable(int? a, int? b) => a.HasValue || b.HasValue
             ? (a ?? 0) + (b ?? 0)

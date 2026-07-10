@@ -7,7 +7,19 @@ public enum LlmProviderKind
 {
     DeepSeek,
     LmStudio,
-    CustomOpenAiCompatible
+    CustomOpenAiCompatible,
+    OpenAiCodex
+}
+
+/// <summary>
+/// Describes how Lucky reaches a configured model provider. Most providers expose the
+/// OpenAI-compatible HTTP chat-completions contract; Codex subscriptions are deliberately
+/// routed through the locally installed official Codex app-server instead.
+/// </summary>
+public enum ProviderTransport
+{
+    OpenAiCompatible,
+    CodexAppServer
 }
 
 public enum HarnessAccessLevel
@@ -95,10 +107,38 @@ public sealed class AppSettings
         ContextWindowTokens = 32768
     };
 
+    public ProviderSettings OpenAiCodex { get; set; } = new()
+    {
+        DisplayName = "OpenAI Codex",
+        Model = "gpt-5.5",
+        RequiresApiKey = false,
+        Transport = ProviderTransport.CodexAppServer,
+        SupportsThinking = true,
+        ThinkingEnabled = true,
+        ReasoningEffort = "medium",
+        // This is Codex's safe default input budget for GPT-5.5, not the public API's
+        // total context-window headline. A live Codex token-usage event supersedes it.
+        ContextWindowTokens = 258400,
+        ModelCapabilities =
+        [
+            new ProviderModelCapability
+            {
+                Id = "gpt-5.5",
+                DisplayName = "GPT-5.5",
+                Description = "Codex subscription model",
+                ReasoningEfforts = ["low", "medium", "high", "xhigh"],
+                DefaultReasoningEffort = "medium",
+                ContextWindowTokens = 258400,
+                IsDefault = true
+            }
+        ]
+    };
+
     public ProviderSettings ActiveProviderSettings => ActiveProvider switch
     {
         LlmProviderKind.DeepSeek => DeepSeek,
         LlmProviderKind.LmStudio => LmStudio,
+        LlmProviderKind.OpenAiCodex => OpenAiCodex,
         _ => Custom
     };
 }
@@ -224,12 +264,29 @@ public sealed class ProviderSettings
     public string DisplayName { get; set; } = "";
     public string BaseUrl { get; set; } = "";
     public string Model { get; set; } = "";
+    public ProviderTransport Transport { get; set; } = ProviderTransport.OpenAiCompatible;
     public bool RequiresApiKey { get; set; }
     public string? EncryptedApiKey { get; set; }
     public bool SupportsThinking { get; set; }
     public bool ThinkingEnabled { get; set; }
     public string ReasoningEffort { get; set; } = "medium";
     public int ContextWindowTokens { get; set; } = 32768;
+    // This contains provider-advertised model and reasoning metadata. For Codex it is refreshed
+    // from the signed-in official app-server catalog; it never contains an OAuth token.
+    public List<ProviderModelCapability> ModelCapabilities { get; set; } = [];
+    public string? ConnectedAccountPlan { get; set; }
+}
+
+public sealed class ProviderModelCapability
+{
+    public string Id { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string Description { get; set; } = "";
+    public List<string> ReasoningEfforts { get; set; } = [];
+    public string DefaultReasoningEffort { get; set; } = "medium";
+    // Effective input budget for the model route, used by Lucky's composer context meter.
+    public int ContextWindowTokens { get; set; }
+    public bool IsDefault { get; set; }
 }
 
 public sealed class LuckyProject
@@ -261,6 +318,14 @@ public sealed class ChatMessage
     public int? PromptTokens { get; set; }
     public int? CompletionTokens { get; set; }
     public int? TotalTokens { get; set; }
+    // The latest provider-reported input context and its effective limit. These are intentionally
+    // separate from billed per-turn totals so the composer meter does not overcount tool loops.
+    public int? ContextTokens { get; set; }
+    public int? ContextWindowTokens { get; set; }
+    // Context is only exact for the provider/model that reported it. Keeping this provenance
+    // prevents a meter from reusing an old provider's value after the user switches models.
+    public LlmProviderKind? ProviderKind { get; set; }
+    public string? ModelId { get; set; }
 }
 
 public sealed class MemoryItem
@@ -321,7 +386,12 @@ public sealed record LlmResponse(
     string? ReasoningContent = null,
     LlmTokenUsage? Usage = null);
 
-public sealed record LlmTokenUsage(int? PromptTokens, int? CompletionTokens, int? TotalTokens);
+public sealed record LlmTokenUsage(
+    int? PromptTokens,
+    int? CompletionTokens,
+    int? TotalTokens,
+    int? ContextTokens = null,
+    int? ContextWindowTokens = null);
 
 public sealed record AgentTurnResult(
     string AssistantMessage,
@@ -330,7 +400,8 @@ public sealed record AgentTurnResult(
     IReadOnlyList<MemoryItem> CapturedMemories,
     bool UsedModel,
     string? ReasoningContent = null,
-    LlmTokenUsage? TokenUsage = null);
+    LlmTokenUsage? TokenUsage = null,
+    string? Model = null);
 
 public sealed record AgentInstructionDocument(string RelativePath, string Content);
 

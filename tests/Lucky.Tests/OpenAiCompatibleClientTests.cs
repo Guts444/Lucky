@@ -53,6 +53,7 @@ public sealed class OpenAiCompatibleClientTests
         Assert.Equal(12, response.Usage?.PromptTokens);
         Assert.Equal(7, response.Usage?.CompletionTokens);
         Assert.Equal(19, response.Usage?.TotalTokens);
+        Assert.Equal(12, response.Usage?.ContextTokens);
 
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
@@ -344,6 +345,7 @@ public sealed class OpenAiCompatibleClientTests
         Assert.Equal(21, response.Usage?.PromptTokens);
         Assert.Equal(8, response.Usage?.CompletionTokens);
         Assert.Equal(29, response.Usage?.TotalTokens);
+        Assert.Equal(21, response.Usage?.ContextTokens);
 
         var request = Assert.Single(handler.Requests);
         using var document = JsonDocument.Parse(request.Body!);

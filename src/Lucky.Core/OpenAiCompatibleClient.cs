@@ -274,10 +274,12 @@ public sealed class OpenAiCompatibleClient : ILlmClient
             return null;
         }
 
+        var promptTokens = IntProperty(usage, "prompt_tokens");
         return new LlmTokenUsage(
-            IntProperty(usage, "prompt_tokens"),
+            promptTokens,
             IntProperty(usage, "completion_tokens"),
-            IntProperty(usage, "total_tokens"));
+            IntProperty(usage, "total_tokens"),
+            ContextTokens: promptTokens);
     }
 
     private static int? IntProperty(JsonElement element, string name)

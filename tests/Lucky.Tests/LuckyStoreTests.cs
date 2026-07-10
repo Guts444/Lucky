@@ -29,6 +29,18 @@ public sealed class LuckyStoreTests
                 Role = ChatRole.User,
                 Content = "Remember my editor preferences."
             });
+            session.Messages.Add(new ChatMessage
+            {
+                Role = ChatRole.Assistant,
+                Content = "I will keep that in mind.",
+                PromptTokens = 42,
+                CompletionTokens = 8,
+                TotalTokens = 50,
+                ContextTokens = 42,
+                ContextWindowTokens = 258400,
+                ProviderKind = LlmProviderKind.OpenAiCodex,
+                ModelId = "gpt-5.5"
+            });
             state.Memories.Add(new MemoryItem
             {
                 Summary = "I prefer concise code review feedback",
@@ -49,9 +61,21 @@ public sealed class LuckyStoreTests
             var loadedSession = Assert.Single(loaded.Sessions);
             Assert.Equal(project.Id, loadedSession.ProjectId);
             Assert.Equal("Planning", loadedSession.Title);
-            var message = Assert.Single(loadedSession.Messages);
-            Assert.Equal(ChatRole.User, message.Role);
-            Assert.Equal("Remember my editor preferences.", message.Content);
+            Assert.Collection(
+                loadedSession.Messages,
+                message =>
+                {
+                    Assert.Equal(ChatRole.User, message.Role);
+                    Assert.Equal("Remember my editor preferences.", message.Content);
+                },
+                message =>
+                {
+                    Assert.Equal(ChatRole.Assistant, message.Role);
+                    Assert.Equal(42, message.ContextTokens);
+                    Assert.Equal(258400, message.ContextWindowTokens);
+                    Assert.Equal(LlmProviderKind.OpenAiCodex, message.ProviderKind);
+                    Assert.Equal("gpt-5.5", message.ModelId);
+                });
 
             var loadedMemory = Assert.Single(loaded.Memories);
             Assert.Equal("I prefer concise code review feedback", loadedMemory.Summary);
@@ -180,6 +204,33 @@ public sealed class LuckyStoreTests
 
             Assert.Equal(1_000_000, state.Settings.DeepSeek.ContextWindowTokens);
             Assert.True(state.Settings.DeepSeek.SupportsThinking);
+        }
+        finally
+        {
+            DeleteTempRoot(tempRoot);
+        }
+    }
+
+    [Fact]
+    public async Task LoadAsync_ProvidesSafeCodexSubscriptionDefaultsWithoutPersistingOAuthMaterial()
+    {
+        var tempRoot = CreateTempRoot();
+        try
+        {
+            var statePath = Path.Combine(tempRoot, "lucky-state.json");
+            var state = await new LuckyStore(statePath).LoadAsync();
+
+            var codex = state.Settings.OpenAiCodex;
+            Assert.Equal(ProviderTransport.CodexAppServer, codex.Transport);
+            Assert.False(codex.RequiresApiKey);
+            Assert.True(codex.SupportsThinking);
+            Assert.True(codex.ThinkingEnabled);
+            Assert.Equal("gpt-5.5", codex.Model);
+            Assert.Equal(258400, codex.ContextWindowTokens);
+            var model = Assert.Single(codex.ModelCapabilities);
+            Assert.Equal("gpt-5.5", model.Id);
+            Assert.Equal(["low", "medium", "high", "xhigh"], model.ReasoningEfforts);
+            Assert.Null(codex.EncryptedApiKey);
         }
         finally
         {

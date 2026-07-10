@@ -44,6 +44,5 @@ Lucky's access levels are part of the user trust model:
 - Keep changes small and consistent with existing C# and XAML patterns.
 - Add tests for risky core behavior, especially memory capture/retrieval, provider payloads, persistence, and search parsing.
 - Do not add network calls that bypass the configured provider or SearXNG settings.
-- for complex tasks, write yourself a new goal and spawn agents in parallel - as many as needed to do it better and faster. Split the work into independent pieces, dispatch them concurrently, and synthesize the results as they return. give each agent its own dedicated /goal.
-- if computer use gives errors, fix them and try again. don't skip using it if a visual test was requested.
+- if computer use gives errors, fix them and try again. don't skip using it if a visual test was needed or requested.
 - if anything visual is not working or not looking right, always use visual test mode, check yourself and fix it.   

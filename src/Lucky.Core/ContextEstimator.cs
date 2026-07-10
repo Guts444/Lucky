@@ -19,7 +19,10 @@ public static class ContextEstimator
             return 0;
         }
 
-        return session.Messages.Sum(message => EstimateTokens(message.Content));
+        // Chat-completions providers add message-role framing in addition to the visible text.
+        // This remains intentionally an estimate; Lucky switches to the provider-reported input
+        // count as soon as a response supplies one.
+        return session.Messages.Sum(message => EstimateTokens(message.Content) + 4);
     }
 
     public static int EstimateMemoryChars(IEnumerable<MemoryItem> memories, MemoryKind kind)

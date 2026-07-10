@@ -2,7 +2,7 @@
 
 Lucky is a WinUI 3 local-first LLM harness for Windows. It is designed to give a user one desktop place for project-scoped chats, configurable model providers, SearXNG-backed web search, durable memory, explicit access levels, and real project filesystem tools.
 
-The current repository has the core harness model in `src/Lucky.Core` and a Codex-inspired WinUI 3 shell in `src/Lucky.App`. The app layer has a glassy project/history rail, right-aligned user messages, left-aligned assistant output, a compact Thinking expander, selectable canvas text, a bottom composer with a single model/reasoning selector, access controls, a context/usage meter, automatic chat auto-scroll, and a full settings workspace.
+The current repository has the core harness model in `src/Lucky.Core` and a Codex-inspired WinUI 3 shell in `src/Lucky.App`. The app layer has a glassy project/history rail, right-aligned user messages, left-aligned assistant output, a compact Thinking expander, selectable canvas text, a bottom composer with a single model/reasoning selector, access controls, a context/usage meter, follow-latest chat scrolling that yields to manual scrolling, a scrollable multiline composer, and a full settings workspace.
 
 ## Goals
 
@@ -10,6 +10,7 @@ The current repository has the core harness model in `src/Lucky.Core` and a Code
 - Keep user state local by default.
 - Support both remote and local OpenAI-compatible providers.
 - Make DeepSeek and LM Studio first-class setup paths.
+- Let ChatGPT subscribers use their available Codex models without copying an API key into Lucky.
 - Use a user-controlled SearXNG instance for web search.
 - Scope chats to projects so conversations stay tied to the workspace they are about.
 - Let the agent read, search, create, and edit files inside the selected project through traceable tools.
@@ -93,6 +94,14 @@ Use DeepSeek when you want hosted model calls.
 
 DeepSeek is configured as an API-key provider. For DeepSeek v4 options Lucky sends DeepSeek's `thinking` object and the selected `reasoning_effort`. When DeepSeek returns `reasoning_content`, Lucky shows that provider reasoning inside the message's Thinking expander rather than replacing it with generic status text.
 
+### OpenAI Codex with ChatGPT
+
+Lucky can use the Codex models included with a connected ChatGPT plan through the official local Codex app-server. In Settings, select any `OpenAI Codex` entry, choose **Connect ChatGPT**, and finish the browser sign-in. Lucky opens the OAuth URL supplied by Codex; the Codex app-server owns refresh-token storage and refreshes it itself. Lucky never reads, displays, or persists a ChatGPT OAuth token.
+
+After connecting, choose **Refresh models**. Lucky asks the signed-in Codex app-server for the models that account can use and exposes every reasoning effort that model advertises, in the advertised order. Its context meter uses the effective input-context budget from Codex's local model metadata and replaces that with the runtime-reported `modelContextWindow` after a response. Codex runs in an ephemeral neutral runtime directory with native command/file approvals denied; project access continues through Lucky's visible, selected-project tools and access levels.
+
+The official Codex CLI must be installed locally. Lucky detects the CLI's native executable, including the binary bundled by the official npm package, but never installs or updates it automatically.
+
 ## Chat Canvas
 
 Lucky's chat canvas is optimized for a Codex/Hermes-style desktop flow:
@@ -100,12 +109,13 @@ Lucky's chat canvas is optimized for a Codex/Hermes-style desktop flow:
 - User messages sit on the right without a visible `You` label, with time at the bottom of the bubble.
 - Assistant output sits on the left, with selectable answer text and selectable Thinking text.
 - The Thinking expander is always labeled `Thinking`; it shows provider reasoning when available and appends visible tool/search trace entries. Large read-file payloads are summarized to path, size, and preview so generated files do not flood the chat canvas.
-- The usage meter prefers provider-reported `prompt_tokens + completion_tokens` totals for the latest turn when available, and falls back to local estimates for older or unsupported provider responses.
+- The composer meter shows current input context, not the turn's billed total. It prefers the provider-reported latest input count and effective context window for the active provider/model, keeps tool-loop totals separately on the assistant message, and prefixes fallback estimates with `~` after a model switch or when no exact reading exists.
+- Press **Ctrl+Enter** or use Send to submit a multiline composer message. While a response streams, chat follows the newest message only until you scroll upward; returning to the bottom re-enables follow-latest behavior.
 - The assistant system prompt asks for clean chat prose, avoiding decorative separators, routine heading hashes, and excessive bold markers.
 
 ### Custom OpenAI-Compatible Provider
 
-The core provider layer still supports a custom provider for other local or hosted servers that implement `/v1/models` and `/v1/chat/completions`. The current app UI focuses the first-run picker on DeepSeek and LM Studio.
+The core provider layer still supports a custom provider for other local or hosted servers that implement `/v1/models` and `/v1/chat/completions`. The combined picker includes DeepSeek, LM Studio, and the signed-in OpenAI Codex catalog.
 
 Configure:
 

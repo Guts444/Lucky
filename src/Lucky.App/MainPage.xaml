@@ -247,7 +247,9 @@
                         VerticalScrollBarVisibility="Auto"
                         HorizontalScrollBarVisibility="Disabled"
                         Loaded="MessageScrollViewer_Loaded"
-                        SizeChanged="MessageScrollViewer_SizeChanged">
+                        SizeChanged="MessageScrollViewer_SizeChanged"
+                        ViewChanged="MessageScrollViewer_ViewChanged"
+                        PointerWheelChanged="MessageScrollViewer_PointerWheelChanged">
                         <ItemsControl
                             x:Name="MessageList"
                             ItemsSource="{Binding Messages}"
@@ -343,11 +345,14 @@
                             <TextBox
                                 x:Name="InputBox"
                                 Text="{Binding MessageInput, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                PlaceholderText="Ask for follow-up changes"
+                                PlaceholderText="Ask for follow-up changes (Ctrl+Enter to send)"
                                 KeyDown="InputBox_KeyDown"
-                                AcceptsReturn="False"
+                                AcceptsReturn="True"
                                 TextWrapping="Wrap"
                                 MinHeight="44"
+                                MaxHeight="160"
+                                ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                 BorderThickness="0"
                                 Background="Transparent" />
                             <Grid Grid.Row="1" ColumnSpacing="8">
@@ -557,7 +562,7 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
                                         <TextBlock Text="Model" Foreground="{StaticResource TextBrush}" />
-                                        <TextBlock Text="Select DeepSeek Flash/Pro with reasoning, or your local LM Studio model" Style="{StaticResource MutedTextStyle}" />
+                                        <TextBlock Text="Select DeepSeek, a local model, or Codex models available through your connected ChatGPT plan" Style="{StaticResource MutedTextStyle}" />
                                     </StackPanel>
                                     <ComboBox
                                         Grid.Column="1"
@@ -566,7 +571,7 @@
                                         DisplayMemberPath="Label" />
                                 </Grid>
                                 <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
-                                <Grid Padding="12" ColumnSpacing="16">
+                                <Grid Padding="12" ColumnSpacing="16" Visibility="{Binding ProviderEndpointVisibility}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="240" />
@@ -581,19 +586,31 @@
                                         <ColumnDefinition Width="240" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Text="Context window" Foreground="{StaticResource TextBrush}" />
-                                        <TextBlock Text="Used by the composer context meter" Style="{StaticResource MutedTextStyle}" />
+                                        <TextBlock Text="Input context" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Uses provider-reported input context after a response, with a local estimate beforehand" Style="{StaticResource MutedTextStyle}" />
                                     </StackPanel>
-                                    <NumberBox Grid.Column="1" Value="{Binding ContextWindowTokens, Mode=TwoWay}" Minimum="1024" Maximum="10000000" SpinButtonPlacementMode="Compact" />
+                                    <NumberBox Grid.Column="1" Value="{Binding ContextWindowTokens, Mode=TwoWay}" IsEnabled="{Binding IsContextWindowEditable}" Minimum="1024" Maximum="10000000" SpinButtonPlacementMode="Compact" />
                                 </Grid>
                                 <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
-                                <Grid Padding="12" ColumnSpacing="16">
+                                <Grid Padding="12" ColumnSpacing="16" Visibility="{Binding ApiKeyVisibility}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="240" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="API key" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
                                     <PasswordBox Grid.Column="1" x:Name="ApiKeyBox" PlaceholderText="Leave blank to keep saved key" PasswordChanged="ApiKeyBox_PasswordChanged" />
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" Visibility="{Binding CodexConnectionVisibility}" />
+                                <Grid Padding="12" ColumnSpacing="16" Visibility="{Binding CodexConnectionVisibility}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Text="ChatGPT subscription" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="{Binding CodexConnectionStatus}" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Content="Connect ChatGPT" Click="ConnectChatGpt_Click" />
                                 </Grid>
                                 <Grid Padding="12" ColumnSpacing="10">
                                     <Grid.ColumnDefinitions>

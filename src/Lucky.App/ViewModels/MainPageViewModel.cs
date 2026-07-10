@@ -14,17 +14,19 @@ public partial class MainPageViewModel : ObservableObject
 {
     private readonly LuckyStore _store;
     private readonly AgentRunner _agentRunner;
-    private readonly OpenAiCompatibleClient _modelClient;
+    private readonly LuckyLlmClient _modelClient;
     private LuckyState _state = new();
     private bool _isHydratingSettings;
     private CancellationTokenSource? _activeTurnCancellation;
 
     public MainPageViewModel()
-        : this(new LuckyStore(), new AgentRunner(), new OpenAiCompatibleClient())
     {
+        _store = new LuckyStore();
+        _modelClient = new LuckyLlmClient();
+        _agentRunner = new AgentRunner(_modelClient);
     }
 
-    public MainPageViewModel(LuckyStore store, AgentRunner agentRunner, OpenAiCompatibleClient modelClient)
+    public MainPageViewModel(LuckyStore store, AgentRunner agentRunner, LuckyLlmClient modelClient)
     {
         _store = store;
         _agentRunner = agentRunner;
@@ -82,6 +84,21 @@ public partial class MainPageViewModel : ObservableObject
 
     [ObservableProperty]
     public partial string ApiKeyInput { get; set; } = "";
+
+    [ObservableProperty]
+    public partial Visibility ProviderEndpointVisibility { get; set; } = Visibility.Visible;
+
+    [ObservableProperty]
+    public partial Visibility ApiKeyVisibility { get; set; } = Visibility.Visible;
+
+    [ObservableProperty]
+    public partial Visibility CodexConnectionVisibility { get; set; } = Visibility.Collapsed;
+
+    [ObservableProperty]
+    public partial string CodexConnectionStatus { get; set; } = "Connect your ChatGPT account to use the Codex models included with your plan.";
+
+    [ObservableProperty]
+    public partial bool IsCodexSignInInProgress { get; set; }
 
     [ObservableProperty]
     public partial string SelectedAccessLevel { get; set; } = "Workspace";
@@ -154,6 +171,9 @@ public partial class MainPageViewModel : ObservableObject
 
     [ObservableProperty]
     public partial int ContextWindowTokens { get; set; } = 32768;
+
+    [ObservableProperty]
+    public partial bool IsContextWindowEditable { get; set; } = true;
 
     [ObservableProperty]
     public partial string WorkspaceHint { get; set; } = "Choose a folder to start project-scoped chats.";
@@ -327,7 +347,11 @@ public partial class MainPageViewModel : ObservableObject
                 Trace = assistantItem.ThinkingText,
                 PromptTokens = result.TokenUsage?.PromptTokens,
                 CompletionTokens = result.TokenUsage?.CompletionTokens,
-                TotalTokens = result.TokenUsage?.TotalTokens
+                TotalTokens = result.TokenUsage?.TotalTokens,
+                ContextTokens = result.TokenUsage?.ContextTokens,
+                ContextWindowTokens = result.TokenUsage?.ContextWindowTokens,
+                ProviderKind = _state.Settings.ActiveProvider,
+                ModelId = result.Model
             };
             session.Messages.Add(assistant);
             session.UpdatedAt = DateTimeOffset.UtcNow;
@@ -614,6 +638,12 @@ public partial class MainPageViewModel : ObservableObject
     {
         ApplySettings();
         var provider = _state.Settings.ActiveProviderSettings;
+        if (provider.Transport == ProviderTransport.CodexAppServer)
+        {
+            await RefreshCodexModelsAsync(saveState: false).ConfigureAwait(true);
+            return;
+        }
+
         var apiKey = CredentialProtector.Unprotect(provider.EncryptedApiKey);
         if (provider.RequiresApiKey && string.IsNullOrWhiteSpace(apiKey))
         {
@@ -648,6 +678,111 @@ public partial class MainPageViewModel : ObservableObject
         catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
         {
             Status = $"Could not refresh models: {ex.Message}";
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task<CodexLoginStart?> StartCodexSignInAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsCodexSignInInProgress)
+        {
+            return null;
+        }
+
+        IsCodexSignInInProgress = true;
+        CodexConnectionStatus = "Opening the official ChatGPT sign-in page...";
+        try
+        {
+            return await _modelClient.StartLoginAsync(cancellationToken).ConfigureAwait(true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException)
+        {
+            IsCodexSignInInProgress = false;
+            CodexConnectionStatus = $"Could not start ChatGPT sign-in: {ex.Message}";
+            Status = CodexConnectionStatus;
+            return null;
+        }
+    }
+
+    public async Task FinishCodexSignInAsync(CodexLoginStart login, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            CodexConnectionStatus = "Waiting for ChatGPT sign-in to finish...";
+            var account = await _modelClient.WaitForLoginAsync(login.LoginId, cancellationToken).ConfigureAwait(true);
+            var provider = _state.Settings.OpenAiCodex;
+            provider.ConnectedAccountPlan = account.Plan;
+            CodexConnectionStatus = account.Detail;
+            await RefreshCodexModelsAsync(saveState: true).ConfigureAwait(true);
+            Status = $"{account.Detail} Codex models are ready.";
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            CodexConnectionStatus = "ChatGPT sign-in was cancelled.";
+            Status = CodexConnectionStatus;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException)
+        {
+            CodexConnectionStatus = $"ChatGPT sign-in did not complete: {ex.Message}";
+            Status = CodexConnectionStatus;
+        }
+        finally
+        {
+            IsCodexSignInInProgress = false;
+        }
+    }
+
+    private async Task RefreshCodexModelsAsync(bool saveState)
+    {
+        IsBusy = true;
+        try
+        {
+            var account = await _modelClient.GetAccountStatusAsync().ConfigureAwait(true);
+            var provider = _state.Settings.OpenAiCodex;
+            provider.ConnectedAccountPlan = account.Plan;
+            CodexConnectionStatus = account.Detail;
+            if (!account.IsChatGptConnected)
+            {
+                Status = "Connect ChatGPT in Settings before loading Codex subscription models.";
+                return;
+            }
+
+            var capabilities = await _modelClient.GetModelCapabilitiesAsync().ConfigureAwait(true);
+            provider.ModelCapabilities = capabilities.Select(CloneModelCapability).ToList();
+            if (provider.ModelCapabilities.Count == 0)
+            {
+                Status = "ChatGPT is connected, but Codex did not return any models for this account.";
+                return;
+            }
+
+            var selected = provider.ModelCapabilities.FirstOrDefault(model =>
+                string.Equals(model.Id, provider.Model, StringComparison.OrdinalIgnoreCase))
+                ?? provider.ModelCapabilities.FirstOrDefault(model => model.IsDefault)
+                ?? provider.ModelCapabilities[0];
+            provider.Model = selected.Id;
+            provider.ContextWindowTokens = selected.ContextWindowTokens;
+            if (!selected.ReasoningEfforts.Contains(provider.ReasoningEffort, StringComparer.OrdinalIgnoreCase))
+            {
+                provider.ReasoningEffort = selected.DefaultReasoningEffort;
+            }
+
+            RefreshModelOptions();
+            HydrateProviderFields(_state.Settings.ActiveProviderSettings);
+            RefreshProviderConfigurationVisibility();
+            if (saveState)
+            {
+                await _store.SaveAsync(_state).ConfigureAwait(true);
+            }
+
+            Status = $"Loaded {provider.ModelCapabilities.Count} Codex model(s), context {CompactNumber(provider.ContextWindowTokens)}.";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or TaskCanceledException or IOException)
+        {
+            Status = $"Could not refresh Codex models: {ex.Message}";
+            CodexConnectionStatus = Status;
         }
         finally
         {
@@ -739,6 +874,11 @@ public partial class MainPageViewModel : ObservableObject
             return;
         }
 
+        if (!IsContextWindowEditable)
+        {
+            return;
+        }
+
         _state.Settings.ActiveProviderSettings.ContextWindowTokens = Math.Max(1024, value);
         RefreshDerivedState();
     }
@@ -784,12 +924,32 @@ public partial class MainPageViewModel : ObservableObject
 
     private void HydrateProviderFields(ProviderSettings provider)
     {
-        ProviderEndpoint = provider.BaseUrl;
+        ProviderEndpoint = provider.Transport == ProviderTransport.CodexAppServer
+            ? "Managed by the local Codex app-server"
+            : provider.BaseUrl;
         ContextWindowTokens = provider.ContextWindowTokens;
         ModelCatalog.Clear();
         if (!string.IsNullOrWhiteSpace(provider.Model))
         {
             ModelCatalog.Add(provider.Model);
+        }
+
+        RefreshProviderConfigurationVisibility();
+    }
+
+    private void RefreshProviderConfigurationVisibility()
+    {
+        var isCodex = _state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex;
+        ProviderEndpointVisibility = isCodex ? Visibility.Collapsed : Visibility.Visible;
+        ApiKeyVisibility = isCodex ? Visibility.Collapsed : Visibility.Visible;
+        CodexConnectionVisibility = isCodex ? Visibility.Visible : Visibility.Collapsed;
+        IsContextWindowEditable = !isCodex;
+        if (isCodex)
+        {
+            var plan = _state.Settings.OpenAiCodex.ConnectedAccountPlan;
+            CodexConnectionStatus = string.IsNullOrWhiteSpace(plan)
+                ? "Connect your ChatGPT account to use the Codex models included with your plan."
+                : $"Connected to ChatGPT {plan}. Refresh models to update what this account can use.";
         }
     }
 
@@ -848,11 +1008,35 @@ public partial class MainPageViewModel : ObservableObject
             false,
             _state.Settings.LmStudio.ContextWindowTokens));
 
+        foreach (var capability in _state.Settings.OpenAiCodex.ModelCapabilities
+                     .OrderByDescending(model => model.IsDefault)
+                     .ThenBy(model => model.DisplayName, StringComparer.OrdinalIgnoreCase))
+        {
+            var efforts = capability.ReasoningEfforts.Count == 0
+                ? [capability.DefaultReasoningEffort]
+                : capability.ReasoningEfforts;
+            foreach (var effort in efforts)
+            {
+                var displayEffort = FormatReasoningEffort(effort);
+                ModelOptions.Add(new ModelOptionViewModel(
+                    $"codex|{capability.Id}|{effort}",
+                    $"OpenAI Codex · {capability.DisplayName} · {displayEffort}",
+                    $"{capability.Description} · {CompactNumber(capability.ContextWindowTokens)} input context",
+                    LlmProviderKind.OpenAiCodex,
+                    capability.Id,
+                    effort,
+                    true,
+                    capability.ContextWindowTokens));
+            }
+        }
+
         var active = _state.Settings.ActiveProviderSettings;
         var activeKey = _state.Settings.ActiveProvider == LlmProviderKind.DeepSeek
             ? $"{active.Model}|{active.ReasoningEffort}"
             : _state.Settings.ActiveProvider == LlmProviderKind.LmStudio
                 ? $"lmstudio|{active.Model}"
+                : _state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex
+                    ? $"codex|{active.Model}|{active.ReasoningEffort}"
                 : previousKey;
 
         _isHydratingSettings = true;
@@ -875,7 +1059,9 @@ public partial class MainPageViewModel : ObservableObject
         provider.Model = option.Model;
         provider.SupportsThinking = option.SupportsThinking;
         provider.ThinkingEnabled = option.SupportsThinking;
-        provider.ReasoningEffort = option.ReasoningEffort == "none" ? "medium" : option.ReasoningEffort;
+        provider.ReasoningEffort = option.ReasoningEffort == "none" && option.Provider != LlmProviderKind.OpenAiCodex
+            ? "medium"
+            : option.ReasoningEffort;
         provider.ContextWindowTokens = option.ContextWindowTokens;
         ApplyKnownProviderCapabilities();
     }
@@ -911,7 +1097,11 @@ public partial class MainPageViewModel : ObservableObject
         _state.Settings.Subagents.MaxAgentsPerTurn = Math.Clamp(MaxSubagentsPerTurn, 0, 12);
 
         var provider = _state.Settings.ActiveProviderSettings;
-        provider.BaseUrl = ProviderEndpoint.Trim();
+        if (provider.Transport != ProviderTransport.CodexAppServer)
+        {
+            provider.BaseUrl = ProviderEndpoint.Trim();
+        }
+
         provider.ContextWindowTokens = Math.Max(1024, ContextWindowTokens);
         ApplyKnownProviderCapabilities();
         if (!string.IsNullOrWhiteSpace(ApiKeyInput))
@@ -943,6 +1133,23 @@ public partial class MainPageViewModel : ObservableObject
                 provider.SupportsThinking = false;
                 provider.ThinkingEnabled = false;
                 provider.ReasoningEffort = "medium";
+                break;
+            case LlmProviderKind.OpenAiCodex:
+                provider.Transport = ProviderTransport.CodexAppServer;
+                provider.RequiresApiKey = false;
+                provider.SupportsThinking = true;
+                provider.ThinkingEnabled = true;
+                var capability = provider.ModelCapabilities.FirstOrDefault(model =>
+                    string.Equals(model.Id, provider.Model, StringComparison.OrdinalIgnoreCase));
+                if (capability is not null)
+                {
+                    provider.ContextWindowTokens = capability.ContextWindowTokens;
+                    if (!capability.ReasoningEfforts.Contains(provider.ReasoningEffort, StringComparer.OrdinalIgnoreCase))
+                    {
+                        provider.ReasoningEffort = capability.DefaultReasoningEffort;
+                    }
+                }
+
                 break;
         }
     }
@@ -1038,11 +1245,16 @@ public partial class MainPageViewModel : ObservableObject
         EmptyStateVisibility = messageCount == 0 ? Visibility.Visible : Visibility.Collapsed;
         MessageListVisibility = messageCount == 0 ? Visibility.Collapsed : Visibility.Visible;
 
-        var usedTokens = LastActualTokenUsage(session) ?? ContextEstimator.EstimateSessionTokens(session);
+        var activeProvider = _state.Settings.ActiveProvider;
+        var activeModel = _state.Settings.ActiveProviderSettings.Model;
+        var actualContextTokens = LastActualContextUsage(session, activeProvider, activeModel);
+        var usedTokens = actualContextTokens ?? ContextEstimator.EstimateSessionTokens(session);
         var maxTokens = Math.Max(1024, _state.Settings.ActiveProviderSettings.ContextWindowTokens);
         ContextUsagePercent = Math.Clamp(usedTokens * 100.0 / maxTokens, 0, 100);
         ContextUsagePercentText = $"{ContextUsagePercent:0}%";
-        ContextUsageLabel = $"{CompactNumber(usedTokens)}/{CompactNumber(maxTokens)}";
+        ContextUsageLabel = actualContextTokens.HasValue
+            ? $"{CompactNumber(usedTokens)}/{CompactNumber(maxTokens)}"
+            : $"~{CompactNumber(usedTokens)}/{CompactNumber(maxTokens)}";
 
         var profileChars = ContextEstimator.EstimateMemoryChars(_state.Memories, MemoryKind.UserProfile);
         var memoryChars = ContextEstimator.EstimateMemoryChars(_state.Memories, MemoryKind.Memory);
@@ -1114,11 +1326,40 @@ public partial class MainPageViewModel : ObservableObject
         return value.ToString();
     }
 
-    private static int? LastActualTokenUsage(ChatSession? session)
+    private static string FormatReasoningEffort(string effort) => effort.Trim().ToLowerInvariant() switch
+    {
+        "none" => "No reasoning",
+        "minimal" => "Minimal",
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Extra High",
+        "max" => "Max",
+        _ => effort
+    };
+
+    private static ProviderModelCapability CloneModelCapability(ProviderModelCapability source) => new()
+    {
+        Id = source.Id,
+        DisplayName = source.DisplayName,
+        Description = source.Description,
+        ReasoningEfforts = [.. source.ReasoningEfforts],
+        DefaultReasoningEffort = source.DefaultReasoningEffort,
+        ContextWindowTokens = source.ContextWindowTokens,
+        IsDefault = source.IsDefault
+    };
+
+    private static int? LastActualContextUsage(
+        ChatSession? session,
+        LlmProviderKind activeProvider,
+        string activeModel)
     {
         return session?.Messages
-            .Where(message => message.Role == ChatRole.Assistant && message.TotalTokens is > 0)
-            .Select(message => message.TotalTokens)
+            .Where(message => message.Role == ChatRole.Assistant &&
+                              message.ContextTokens is > 0 &&
+                              message.ProviderKind == activeProvider &&
+                              string.Equals(message.ModelId, activeModel, StringComparison.OrdinalIgnoreCase))
+            .Select(message => message.ContextTokens)
             .LastOrDefault();
     }
 }

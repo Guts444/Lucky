@@ -20,7 +20,7 @@ dotnet test Lucky.slnx
 Latest verified results:
 
 - WinUI x64 app build passed with 0 warnings and 0 errors.
-- xUnit passed 103/103 tests, including streamed answer deltas, bounded parent/child tool-call batches, loop finalization and cancellation, context re-budgeting, unified patching, PowerShell timeout/cancellation reporting, trusted page reading, MCP DPAPI persistence and protocol-frame bounds, Docker sandbox policy, memory controls, ChatOnly context filtering, and subagent trust inheritance.
+- xUnit passed 105/105 tests, including streamed answer deltas, bounded parent/child tool-call batches, loop finalization and cancellation, input-context versus aggregate-usage accounting, unified patching, PowerShell timeout/cancellation reporting, trusted page reading, MCP DPAPI persistence and protocol-frame bounds, Docker sandbox policy, memory controls, ChatOnly context filtering, Codex provider defaults, and subagent trust inheritance.
 - Computer Use visual QA launched Lucky and verified the Codex-like shell renders with the glassy project/history rail, darker chat workspace, centered empty state, rounded bottom composer, a single model/reasoning picker, access control, and a `0/1M` DeepSeek context meter.
 - Computer Use visual QA launched the patched x64 build and verified right-aligned user messages no longer show a visible `You` label, the user timestamp sits at the bottom of the bubble, assistant output stays left-aligned, the expander label is `Thinking`, and the Xbox answer no longer renders raw `##`, `###`, `---`, or stray bold markers.
 - Computer Use visual QA verified assistant canvas text can be drag-selected for copy, with Windows reporting selected text from the chat answer.
@@ -44,8 +44,11 @@ Latest verified results:
 - DeepSeek: `deepseek-v4-flash` and `deepseek-v4-pro` both work with Lucky's thinking payload and reasoning effort.
 - DeepSeek thinking mode sends `thinking` and `reasoning_effort`; portable providers do not receive DeepSeek-only fields.
 - DeepSeek reasoning text appears inside the message's `Thinking` expander when `reasoning_content` is returned.
-- Provider token usage, when returned, updates the chat meter with combined prompt/completion usage for the latest turn; unsupported providers fall back to local estimates.
+- Provider token usage keeps combined prompt/completion totals for the turn, while the chat meter uses the latest provider-reported input context only for the matching active provider/model; unsupported providers or a model switch show a `~` local estimate instead of presenting it as exact.
 - DeepSeek v4 saved states with stale 131K context values migrate to a 1,000,000-token context meter.
+- OpenAI Codex: with the official Codex CLI installed, select an OpenAI Codex picker entry, choose **Connect ChatGPT**, and complete the browser OAuth flow. Confirm Lucky never asks for or displays a token, the connection reports the ChatGPT plan, and the saved Lucky state has no OAuth credential field.
+- OpenAI Codex: choose **Refresh models** and confirm only models returned for the signed-in account appear, with every advertised reasoning effort in its catalog order. Confirm the displayed input context comes from Codex metadata and is locked against manual override.
+- OpenAI Codex: run a Workspace prompt that asks to list project files. Confirm the model invokes Lucky's visible `project.list_files` trace rather than a native Codex command, then confirm the reply streams and the meter reflects the provider-reported input context.
 - Custom provider: base URL, model, and API-key requirement are respected.
 - Provider errors produce user-facing messages that include enough detail to fix configuration without exposing secrets.
 
@@ -87,6 +90,11 @@ Latest verified results:
 ## Docker Code Sandbox Checks
 
 - The Code execution sandbox card is visible at the bottom of Settings, clearly distinguishes itself from host PowerShell, says no host folders are mounted, and has a nearby `Save settings` button.
+
+## Composer and Scroll Checks
+
+- Type a message taller than the composer. Confirm the text box grows to its cap, exposes an internal vertical scrollbar, and its bottom line remains reachable. Enter inserts a line break; Ctrl+Enter and Send submit the message.
+- During a streaming response, scroll upward with the mouse wheel. Confirm Lucky stops forcing the canvas to the bottom. Scroll back to the latest message, then confirm follow-latest resumes for new streamed content.
 - Sandbox is off by default. With it off, with an empty image, or below `FullAccess`, `sandbox_execute` is not registered with the model and no Docker command runs.
 - Enable it only after manually building or loading a known local image that contains `sh` and the desired runtime. Lucky must not pull an image; a missing image is a visible trace error that says it was not available locally.
 - With Docker Desktop stopped, an attempted configured sandbox run becomes a visible Docker availability error rather than a hang, host-shell fallback, or automatic image pull.

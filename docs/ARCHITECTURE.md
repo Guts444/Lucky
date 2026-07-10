@@ -5,7 +5,7 @@ Lucky is a Windows desktop LLM harness with a local-first core. The design separ
 ## Architectural Goals
 
 - Local-first state: projects, sessions, settings, and memories live under the current user's local app data.
-- Provider flexibility: DeepSeek, LM Studio, and custom OpenAI-compatible servers share one provider interface.
+- Provider flexibility: DeepSeek, LM Studio, custom OpenAI-compatible servers, and ChatGPT-backed Codex subscriptions share one Lucky provider interface.
 - User-controlled search: web lookup flows through a configured SearXNG endpoint.
 - Explicit external capabilities: trusted static page reading, MCP, and Docker sandbox execution are disabled until the user configures and enables them.
 - Project-scoped context: chats and memories can be tied to workspace folders.
@@ -26,6 +26,7 @@ Lucky.Core
   CredentialProtector.cs      Current-user DPAPI secret protection
   ContextEstimator.cs         Fallback token/character estimates for UI meters
   OpenAiCompatibleClient.cs   /models and /chat/completions provider calls
+  CodexAppServerClient.cs     Official local Codex app-server OAuth/model/tool bridge
   ProjectFileToolService.cs   Safe project-scoped list/read/search/write/edit/patch tools
   ProjectTerminalToolService.cs Bounded FullAccess Windows PowerShell command runner
   DockerCodeExecutionSandboxService.cs Opt-in constrained local-Docker code runner
@@ -43,7 +44,7 @@ Lucky.Tests
   Unit and behavior tests for core services
 ```
 
-The app shell mirrors the Codex desktop layout: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, rounded bottom composer, compact access control, a single model/reasoning picker, context/usage meter, automatic scroll-to-latest behavior, and a settings workspace with a left settings nav.
+The app shell mirrors the Codex desktop layout: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, rounded multiline composer, compact access control, a single model/reasoning picker, context/usage meter, follow-latest scrolling that stops when the user scrolls upward, and a settings workspace with a left settings nav.
 
 ## Runtime State
 
@@ -79,23 +80,26 @@ Writes use a temporary file and replacement/move to reduce the chance of corrupt
 - `GET {baseUrl}/models`
 - `POST {baseUrl}/chat/completions`
 
-Provider settings include display name, base URL, model name, API-key requirement, protected API key, thinking support, reasoning flag, reasoning effort, and context-window tokens. The WinUI layer exposes DeepSeek and LM Studio through combined `ModelOptionViewModel` entries so the composer and settings use one model picker. Defaults are:
+Provider settings include display name, transport, base URL where applicable, model name, API-key requirement, protected API key, thinking support, reasoning flag, reasoning effort, effective input-context tokens, and cached provider model capabilities. The WinUI layer exposes all providers through combined `ModelOptionViewModel` entries so the composer and settings use one model picker. Defaults are:
 
 - DeepSeek: `https://api.deepseek.com`, `deepseek-v4-pro`, API key required, thinking supported and enabled, 1,000,000 context tokens for v4 models.
 - LM Studio: `http://127.0.0.1:1234/v1`, no API key required.
 - Custom: `http://127.0.0.1:8000/v1`, no API key required by default.
+- OpenAI Codex: local official app-server transport, ChatGPT OAuth managed by Codex rather than Lucky, `gpt-5.5` default, and a safe 258,400-token default input budget until live metadata is available.
 
 API keys are unprotected only at call time through `CredentialProtector`. If a selected provider requires a key and none is configured, `AgentRunner` returns a user-facing setup message instead of calling the provider.
 
 When `SupportsThinking` is true, `OpenAiCompatibleClient` sends `thinking: { type: "enabled" }` plus `reasoning_effort` for thinking mode, or `thinking: { type: "disabled" }` plus temperature when disabled. Providers without thinking support receive the portable payload.
 
-Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window.
+Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window. For Codex, `CodexAppServerClient` reads the signed-in app-server model catalog and its model-cache context metadata, preserves the catalog's reasoning-effort order, and treats the effective input budget as the meter limit.
 
 Tool schemas are sent as OpenAI-compatible `tools` with `tool_choice: auto` only when tools are available for that model round. Assistant tool-call messages and `tool` result messages are serialized back into the next model round. Returned `tool_calls` are parsed into `ToolCallRequest` records so the core loop remains provider-neutral. When the agent loop needs to finalize after a loop guard, Lucky calls the provider with no `tools` and no `tool_choice` so the model must answer instead of continuing to request tools.
 
 When the UI supplies stream progress, `OpenAiCompatibleClient` sends `stream: true` and parses server-sent events. Text deltas are reported immediately for token-by-token rendering, DeepSeek `reasoning_content` deltas are forwarded as actual Thinking text, and streamed `tool_calls` are accumulated by index before the agent loop executes them. Non-streaming calls still use the same response parser with `stream: false`.
 
-Provider responses can include standard OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens`. Non-streaming responses parse usage directly. For thinking-capable streamed responses, Lucky asks for `stream_options.include_usage` and captures usage-only chunks before skipping empty choices. `AgentRunner` aggregates usage across bounded tool-loop rounds so a turn with tool calls can report combined model input/output usage.
+Provider responses can include standard OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens`. Non-streaming responses parse usage directly. For thinking-capable streamed responses, Lucky asks for `stream_options.include_usage` and captures usage-only chunks before skipping empty choices. `AgentRunner` aggregates billed input/output usage across bounded tool-loop rounds, while carrying the latest request's input-context value separately for the composer meter.
+
+`CodexAppServerClient` launches `codex app-server --stdio` from a verified official CLI executable. It initializes the documented local JSON-RPC protocol, starts the managed ChatGPT browser OAuth flow, and never receives raw OAuth material. Each Lucky turn uses an ephemeral Codex thread in a neutral local runtime directory with the `read-only` sandbox and `untrusted` approval policy. Lucky exposes its own selected-project tools as app-server dynamic tools; native Codex command, file, network, browser, skill, and permission requests are denied. Dynamic tool calls come back through the existing Lucky tool loop, so access levels and Thinking traces stay authoritative.
 
 ## SearXNG Search
 
@@ -162,7 +166,7 @@ Retrieval also filters by scope before scoring: global memories are always eligi
 
 This is a lightweight durable-memory layer rather than an embeddings store today. Future vector search should preserve the same `MemoryItem` contract unless a migration is needed.
 
-`ContextEstimator` provides approximate text-token counts for older turns and providers that do not report usage, plus character totals for the USER and MEMORY settings budgets. When provider token usage is available on assistant messages, the chat meter prefers the latest reported total instead of the local estimate. Prompt assembly enforces `UserProfileCharLimit` and `MemoryCharLimit` separately when rendering recalled memory sections.
+`ContextEstimator` provides approximate text-token counts, including lightweight chat-message framing, for older turns and providers that do not report usage, plus character totals for the USER and MEMORY settings budgets. The composer meter prefers the latest provider-reported input-context count only when it was reported by the active provider/model, not the assistant turn's aggregate/billed total; `~` marks a fallback estimate after a model switch or when no exact reading exists. Prompt assembly enforces `UserProfileCharLimit` and `MemoryCharLimit` separately when rendering recalled memory sections.
 
 ## Agent Turn Flow
 
