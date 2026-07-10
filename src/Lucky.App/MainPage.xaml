@@ -22,6 +22,8 @@
         <SolidColorBrush x:Key="MutedBrush" Color="#A6A6A6" />
         <SolidColorBrush x:Key="AccentBrush" Color="#FF7A1A" />
         <SolidColorBrush x:Key="BlueAccentBrush" Color="#4EA3FF" />
+        <SolidColorBrush x:Key="ComposerBrush" Color="#FF252525" />
+        <SolidColorBrush x:Key="ComposerControlBrush" Color="#FF303030" />
 
         <Style x:Key="RailButtonStyle" TargetType="Button">
             <Setter Property="HorizontalAlignment" Value="Stretch" />
@@ -39,6 +41,39 @@
             <Setter Property="MinHeight" Value="32" />
             <Setter Property="Padding" Value="7" />
             <Setter Property="CornerRadius" Value="8" />
+        </Style>
+
+        <Style x:Key="ComposerComboBoxStyle" TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="11,3" />
+            <Setter Property="CornerRadius" Value="15" />
+            <Setter Property="Background" Value="{StaticResource ComposerControlBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+
+        <Style x:Key="ComposerIconButtonStyle" TargetType="Button" BasedOn="{StaticResource IconOnlyButtonStyle}">
+            <Setter Property="MinWidth" Value="30" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="CornerRadius" Value="15" />
+            <Setter Property="Padding" Value="6" />
+            <Setter Property="Background" Value="{StaticResource ComposerControlBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+        </Style>
+
+        <Style x:Key="ComposerSendButtonStyle" TargetType="Button" BasedOn="{StaticResource ComposerIconButtonStyle}">
+            <Setter Property="Background" Value="#F0F0F0" />
+            <Setter Property="Foreground" Value="#171717" />
+        </Style>
+
+        <Style x:Key="EmptyFolderButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
         </Style>
 
         <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
@@ -233,12 +268,22 @@
                             TextAlignment="Center"
                             FontSize="28"
                             FontWeight="SemiBold" />
-                        <TextBlock
-                            Text="{Binding ChatSubheading}"
-                            Foreground="{StaticResource MutedBrush}"
-                            TextAlignment="Center"
-                            TextWrapping="Wrap"
-                            FontSize="14" />
+                        <Button
+                            Click="ChooseFolder_Click"
+                            Style="{StaticResource EmptyFolderButtonStyle}"
+                            HorizontalAlignment="Center"
+                            ToolTipService.ToolTip="Change working folder"
+                            automation:AutomationProperties.Name="Change working folder">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <FontIcon Glyph="&#xE8B7;" FontSize="13" />
+                                <TextBlock
+                                    Text="{Binding ChatSubheading}"
+                                    TextAlignment="Center"
+                                    TextWrapping="Wrap"
+                                    FontSize="14" />
+                                <FontIcon Glyph="&#xE70D;" FontSize="10" />
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
 
                     <ScrollViewer
@@ -332,12 +377,12 @@
                         MaxWidth="736"
                         HorizontalAlignment="Center"
                         Margin="18,0"
-                        Background="{StaticResource GlassBrush}"
+                        Background="{StaticResource ComposerBrush}"
                         BorderBrush="{StaticResource StrokeBrush}"
                         BorderThickness="1"
-                        CornerRadius="18"
-                        Padding="12,10">
-                        <Grid RowSpacing="8">
+                        CornerRadius="22"
+                        Padding="14,12">
+                        <Grid RowSpacing="10">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
@@ -349,12 +394,24 @@
                                 KeyDown="InputBox_KeyDown"
                                 AcceptsReturn="True"
                                 TextWrapping="Wrap"
-                                MinHeight="44"
+                                MinHeight="48"
                                 MaxHeight="160"
+                                Padding="4,2"
                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                 BorderThickness="0"
-                                Background="Transparent" />
+                                Background="Transparent"
+                                FocusVisualPrimaryBrush="Transparent"
+                                FocusVisualSecondaryBrush="Transparent">
+                                <TextBox.Resources>
+                                    <SolidColorBrush x:Key="TextControlBackground" Color="Transparent" />
+                                    <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent" />
+                                    <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent" />
+                                    <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent" />
+                                    <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent" />
+                                </TextBox.Resources>
+                            </TextBox>
                             <Grid Grid.Row="1" ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
@@ -368,13 +425,14 @@
                                     ItemsSource="{Binding AccessLevels}"
                                     SelectedItem="{Binding SelectedAccessLevel, Mode=TwoWay}"
                                     Foreground="{StaticResource AccentBrush}"
-                                    MinWidth="108" />
+                                    MinWidth="108"
+                                    Style="{StaticResource ComposerComboBoxStyle}" />
                                 <Border
                                     Grid.Column="2"
                                     VerticalAlignment="Center"
-                                    Background="#80262626"
-                                    CornerRadius="8"
-                                    Padding="8,4">
+                                    Background="{StaticResource ComposerControlBrush}"
+                                    CornerRadius="15"
+                                    Padding="10,6">
                                     <StackPanel Orientation="Horizontal" Spacing="8">
                                         <TextBlock Text="{Binding ContextUsageLabel}" Foreground="{StaticResource MutedBrush}" FontSize="11" />
                                         <ProgressBar Width="64" Height="5" Value="{Binding ContextUsagePercent}" Maximum="100" />
@@ -386,21 +444,22 @@
                                     ItemsSource="{Binding ModelOptions}"
                                     SelectedItem="{Binding SelectedModelOption, Mode=TwoWay}"
                                     DisplayMemberPath="Label"
-                                    MinWidth="210" />
+                                    MinWidth="210"
+                                    Style="{StaticResource ComposerComboBoxStyle}" />
                                 <Button
                                     Grid.Column="4"
                                      Command="{Binding StopCommand}"
                                      IsEnabled="{Binding IsBusy}"
                                      ToolTipService.ToolTip="Stop the current turn"
                                      automation:AutomationProperties.Name="Stop the current turn"
-                                     Style="{StaticResource IconOnlyButtonStyle}">
+                                     Style="{StaticResource ComposerIconButtonStyle}">
                                     <FontIcon Glyph="&#xE71A;" FontSize="15" />
                                 </Button>
                                 <Button
                                      Grid.Column="5"
                                      Command="{Binding SendCommand}"
                                      automation:AutomationProperties.Name="Send message"
-                                     Style="{StaticResource IconOnlyButtonStyle}">
+                                     Style="{StaticResource ComposerSendButtonStyle}">
                                     <FontIcon Glyph="&#xE724;" FontSize="15" />
                                 </Button>
                             </Grid>
@@ -464,16 +523,6 @@
                                 </StackPanel>
                             </Button>
                             <Button
-                                Tag="Model"
-                                Click="SettingsSection_Click"
-                                Style="{StaticResource RailButtonStyle}"
-                                automation:AutomationProperties.Name="Go to Model settings">
-                                <StackPanel Orientation="Horizontal" Spacing="10">
-                                    <FontIcon Glyph="&#xE8A5;" FontSize="13" />
-                                    <TextBlock Text="Model" />
-                                </StackPanel>
-                            </Button>
-                            <Button
                                 Tag="Memory"
                                 Click="SettingsSection_Click"
                                 Style="{StaticResource RailButtonStyle}"
@@ -485,6 +534,16 @@
                             </Button>
 
                             <TextBlock Text="Integrations" Style="{StaticResource SectionLabelStyle}" />
+                            <Button
+                                Tag="Providers"
+                                Click="SettingsSection_Click"
+                                Style="{StaticResource RailButtonStyle}"
+                                automation:AutomationProperties.Name="Go to provider settings">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <FontIcon Glyph="&#xE8D7;" FontSize="13" />
+                                    <TextBlock Text="Providers" />
+                                </StackPanel>
+                            </Button>
                             <Button
                                 Tag="Searxng"
                                 Click="SettingsSection_Click"
@@ -510,49 +569,41 @@
                 <StackPanel x:Name="SettingsContent" Width="672" HorizontalAlignment="Center" Spacing="30">
                     <TextBlock x:Name="GeneralSettingsSection" Text="General" Foreground="{StaticResource TextBrush}" FontSize="20" FontWeight="SemiBold" />
 
-                    <StackPanel Spacing="14">
-                        <TextBlock Text="Work mode" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
-                        <TextBlock Text="Choose how much technical detail Lucky shows" Style="{StaticResource MutedTextStyle}" />
-                        <Grid ColumnSpacing="12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Border Style="{StaticResource SettingsCardStyle}" Padding="16">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <FontIcon Glyph="&#xE943;" VerticalAlignment="Center" />
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Text="For coding" Foreground="{StaticResource TextBrush}" />
-                                        <TextBlock Text="More technical responses and control" Style="{StaticResource MutedTextStyle}" />
-                                    </StackPanel>
-                                    <RadioButton Grid.Column="2" IsChecked="True" />
-                                </Grid>
-                            </Border>
-                            <Border Grid.Column="1" Style="{StaticResource SettingsCardStyle}" Padding="16">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <FontIcon Glyph="&#xE8F2;" VerticalAlignment="Center" />
-                                    <StackPanel Grid.Column="1">
-                                        <TextBlock Text="For everyday work" Foreground="{StaticResource TextBrush}" />
-                                        <TextBlock Text="Same power, less technical detail" Style="{StaticResource MutedTextStyle}" />
-                                    </StackPanel>
-                                    <RadioButton Grid.Column="2" />
-                                </Grid>
-                            </Border>
-                        </Grid>
-                    </StackPanel>
-
                     <StackPanel Spacing="10">
-                        <TextBlock x:Name="ModelSettingsSection" Text="Model and reasoning" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                        <TextBlock x:Name="ProviderSettingsSection" Text="Providers" Foreground="{StaticResource TextBrush}" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock Text="Connect accounts and configure API or local endpoints here. Choose the active model from the chat composer." Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
+
+                        <TextBlock Text="Subscription accounts" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsCardStyle}">
+                            <StackPanel>
+                                <Grid Padding="14" ColumnSpacing="16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="OpenAI OAuth (ChatGPT)" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" />
+                                        <TextBlock Text="Browser sign-in for Codex models included with an eligible ChatGPT plan" Style="{StaticResource MutedTextStyle}" />
+                                        <TextBlock Text="{Binding CodexConnectionStatus}" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" MaxWidth="430" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                        <Button Content="Connect" Click="ConnectChatGpt_Click" />
+                                        <Button Content="Disconnect" Command="{Binding DisconnectCodexCommand}" IsEnabled="{Binding IsCodexConnected}" />
+                                    </StackPanel>
+                                </Grid>
+                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
+                                <Grid Padding="12" ColumnSpacing="10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Lucky protects this sign-in with Windows DPAPI and does not reuse Codex CLI credentials." Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                    <Button Grid.Column="1" Command="{Binding RefreshCodexSubscriptionCommand}" Content="Refresh account models" IsEnabled="{Binding IsCodexConnected}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="API &amp; local providers" Foreground="{StaticResource TextBrush}" FontWeight="SemiBold" Margin="0,12,0,0" />
                         <Border Style="{StaticResource SettingsCardStyle}">
                             <StackPanel>
                                 <Grid Padding="12" ColumnSpacing="16">
@@ -561,14 +612,10 @@
                                         <ColumnDefinition Width="240" />
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
-                                        <TextBlock Text="Model" Foreground="{StaticResource TextBrush}" />
-                                        <TextBlock Text="Select DeepSeek, a local model, or Codex models available through your connected ChatGPT plan" Style="{StaticResource MutedTextStyle}" />
+                                        <TextBlock Text="Provider" Foreground="{StaticResource TextBrush}" />
+                                        <TextBlock Text="Editing a provider never switches the active chat model" Style="{StaticResource MutedTextStyle}" />
                                     </StackPanel>
-                                    <ComboBox
-                                        Grid.Column="1"
-                                        ItemsSource="{Binding ModelOptions}"
-                                        SelectedItem="{Binding SelectedModelOption, Mode=TwoWay}"
-                                        DisplayMemberPath="Label" />
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding ProviderSetupOptions}" SelectedItem="{Binding SelectedProviderSetup, Mode=TwoWay}" SelectionChanged="ProviderSetup_SelectionChanged" />
                                 </Grid>
                                 <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
                                 <Grid Padding="12" ColumnSpacing="16" Visibility="{Binding ProviderEndpointVisibility}">
@@ -577,7 +624,7 @@
                                         <ColumnDefinition Width="240" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Text="Endpoint" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
-                                    <TextBox Grid.Column="1" Text="{Binding ProviderEndpoint, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBox Grid.Column="1" Text="{Binding ProviderEndpoint, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsProviderEndpointEditable}" />
                                 </Grid>
                                 <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" />
                                 <Grid Padding="12" ColumnSpacing="16">
@@ -600,25 +647,13 @@
                                     <TextBlock Text="API key" Foreground="{StaticResource TextBrush}" VerticalAlignment="Center" />
                                     <PasswordBox Grid.Column="1" x:Name="ApiKeyBox" PlaceholderText="Leave blank to keep saved key" PasswordChanged="ApiKeyBox_PasswordChanged" />
                                 </Grid>
-                                <Rectangle Height="1" Fill="{StaticResource StrokeSoftBrush}" Visibility="{Binding CodexConnectionVisibility}" />
-                                <Grid Padding="12" ColumnSpacing="16" Visibility="{Binding CodexConnectionVisibility}">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Spacing="3">
-                                        <TextBlock Text="ChatGPT subscription" Foreground="{StaticResource TextBrush}" />
-                                        <TextBlock Text="{Binding CodexConnectionStatus}" Style="{StaticResource MutedTextStyle}" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <Button Grid.Column="1" Content="Connect ChatGPT" Click="ConnectChatGpt_Click" />
-                                </Grid>
                                 <Grid Padding="12" ColumnSpacing="10">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <Button Command="{Binding RefreshModelsCommand}" Content="Refresh models" />
-                                    <Button Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save" />
+                                    <Button Grid.Column="1" Command="{Binding SaveSettingsCommand}" Content="Save provider" />
                                 </Grid>
                             </StackPanel>
                         </Border>

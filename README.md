@@ -65,7 +65,7 @@ That state includes settings, provider configuration, subagent settings, project
 
 ## Provider Setup
 
-Lucky uses an OpenAI-compatible chat-completions interface for all model providers.
+Lucky uses OpenAI-compatible chat completions for API/local providers and the official local Codex app-server for ChatGPT subscription models. Settings separates **Subscription accounts** from **API & local providers**; the chat composer is the only model/reasoning picker.
 
 Model calls stream when the provider supports chat-completions streaming. Lucky shows answer tokens as they arrive, keeps displayed answers clean for the plain chat canvas, tracks reasoning/thinking text separately when the provider supplies it, and still parses streamed tool calls so project actions can run before the final answer.
 
@@ -76,8 +76,8 @@ Use LM Studio when you want model traffic to stay on the local machine.
 1. Install LM Studio and download a chat-capable model.
 2. Start the local server in LM Studio.
 3. Confirm the server is listening at `http://127.0.0.1:1234/v1`.
-4. In Lucky settings or the composer, choose the `LM Studio` entry from the combined model selector.
-5. Refresh models when LM Studio is running, then set the context window to match the loaded model so the composer meter is meaningful.
+4. In Settings > Providers > API & local providers, choose `LM Studio`, verify the endpoint, and refresh models.
+5. Choose any discovered LM Studio model from the chat composer; set the context window to match the loaded model so the meter is meaningful.
 
 The default LM Studio provider does not require an API key and does not use DeepSeek thinking parameters.
 
@@ -86,19 +86,20 @@ The default LM Studio provider does not require an API key and does not use Deep
 Use DeepSeek when you want hosted model calls.
 
 1. Create a DeepSeek API key.
-2. In Lucky settings or the composer, choose `DeepSeek V4 Flash` or `DeepSeek V4 Pro` from the combined model selector.
-3. Use the default base URL `https://api.deepseek.com` unless DeepSeek changes its OpenAI-compatible endpoint.
+2. In Settings > Providers > API & local providers, choose `DeepSeek API` and save the key. The canonical `https://api.deepseek.com` endpoint is locked so a saved key cannot be silently redirected.
+3. Choose `DeepSeek V4 Flash` or `DeepSeek V4 Pro` and the reasoning level from the chat composer.
 4. Pick `High` or `Extra High` reasoning from the selector entry.
-5. Store the API key through the settings UI so Lucky can protect it before writing state.
-6. Use `Refresh models` to validate the connection; DeepSeek v4 models default the context meter to 1,000,000 tokens.
+5. Use `Refresh models` to validate the connection; DeepSeek v4 models default the context meter to 1,000,000 tokens.
 
-DeepSeek is configured as an API-key provider. For DeepSeek v4 options Lucky sends DeepSeek's `thinking` object and the selected `reasoning_effort`. When DeepSeek returns `reasoning_content`, Lucky shows that provider reasoning inside the message's Thinking expander rather than replacing it with generic status text.
+DeepSeek is configured as an API-key provider. For DeepSeek v4 options Lucky sends DeepSeek's `thinking` object and selected `reasoning_effort`, omits the incompatible `tool_choice` field in thinking mode, and replays `reasoning_content` across tool rounds as required by DeepSeek. Lucky also recognizes the provider's textual DSML fallback, validates it against the tools exposed in that request, and never renders protocol markup as an assistant answer.
 
 ### OpenAI Codex with ChatGPT
 
-Lucky can use the Codex models included with a connected ChatGPT plan through the official local Codex app-server. In Settings, select any `OpenAI Codex` entry, choose **Connect ChatGPT**, and finish the browser sign-in. Lucky opens the OAuth URL supplied by Codex; the Codex app-server owns refresh-token storage and refreshes it itself. Lucky never reads, displays, or persists a ChatGPT OAuth token.
+Lucky can use Codex models included with a connected ChatGPT plan through the official local Codex app-server. In Settings > Providers > Subscription accounts, choose **Connect** and finish the browser sign-in. Lucky accepts only an HTTPS authorization URL supplied by Codex; the app-server owns refresh-token storage and refreshes it itself. Lucky never reads or displays a ChatGPT OAuth token.
 
-After connecting, choose **Refresh models**. Lucky asks the signed-in Codex app-server for the models that account can use and exposes every reasoning effort that model advertises, in the advertised order. Its context meter uses the effective input-context budget from Codex's local model metadata and replaces that with the runtime-reported `modelContextWindow` after a response. Codex runs in an ephemeral neutral runtime directory with native command/file approvals denied; project access continues through Lucky's visible, selected-project tools and access levels.
+Lucky sets a dedicated `%LOCALAPPDATA%\Lucky\CodexHome` (or the packaged LocalCache equivalent) for every app-server process. This keeps Lucky's account, model cache, configuration, hooks, plugins, and MCP state separate from the Codex CLI and other apps. Because Windows Credential Manager cannot hold the full ChatGPT OAuth bundle, Lucky materializes Codex's file credential only while a helper starts and otherwise stores it as a current-user Windows DPAPI blob. Browser cookies may still make the OpenAI webpage recognize an existing browser session, but that does not mean Lucky reused another app's local credential. Settings provides explicit Connect, Disconnect, and account-model refresh controls.
+
+After connecting, choose **Refresh account models**. Lucky reuses that authenticated app-server session and calls the official `model/list` method; it exposes only the visible models and reasoning efforts advertised for Lucky's isolated sign-in. Lucky does not copy model entries from another Codex installation or invent newer model ids, so a model appears only after the installed official app-server advertises it for that account. Its context meter uses model metadata and is replaced by runtime-reported context after a response. Codex runs from an ephemeral neutral directory with a Lucky-managed private configuration that disables native shell, web-search, app, hook, memory, plugin, and multi-agent features; selected-project actions continue through Lucky's visible tools and access levels.
 
 The official Codex CLI must be installed locally. Lucky detects the CLI's native executable, including the binary bundled by the official npm package, but never installs or updates it automatically.
 
@@ -106,6 +107,8 @@ The official Codex CLI must be installed locally. Lucky detects the CLI's native
 
 Lucky's chat canvas is optimized for a Codex/Hermes-style desktop flow:
 
+- The composer uses one continuous, rounded surface; its text area does not switch to a separate highlighted panel on focus, and the access/model/action controls use compact rounded treatments.
+- On a project's empty state, the displayed working-folder path is a button that opens the folder picker, so the workspace can be changed without returning to the rail.
 - User messages sit on the right without a visible `You` label, with time at the bottom of the bubble.
 - Assistant output sits on the left, with selectable answer text and selectable Thinking text.
 - The Thinking expander is always labeled `Thinking`; it shows provider reasoning when available and appends visible tool/search trace entries. Large read-file payloads are summarized to path, size, and preview so generated files do not flood the chat canvas.
@@ -115,15 +118,13 @@ Lucky's chat canvas is optimized for a Codex/Hermes-style desktop flow:
 
 ### Custom OpenAI-Compatible Provider
 
-The core provider layer still supports a custom provider for other local or hosted servers that implement `/v1/models` and `/v1/chat/completions`. The combined picker includes DeepSeek, LM Studio, and the signed-in OpenAI Codex catalog.
+The provider layer supports custom local or hosted servers that implement `/v1/models` and `/v1/chat/completions`. Configure the endpoint and optional key under **API & local providers**, refresh its catalog, then choose a discovered model in the chat composer. Remote custom endpoints require HTTPS; plain HTTP is limited to loopback endpoints.
 
 Configure:
 
-- Display name
 - Base URL
-- Model
-- Whether an API key is required
-- Optional reasoning settings
+- Optional API key
+- Input-context budget
 
 ## SearXNG Setup
 

@@ -389,6 +389,149 @@ public sealed class OpenAiCompatibleClientTests
         Assert.Equal("""{"path":"README.md"}""", call.ArgumentsJson);
     }
 
+    [Fact]
+    public async Task CompleteChatAsync_ParsesTextualDsmlToolCallsInsteadOfShowingProtocolMarkup()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => JsonResponse(
+            """
+            {
+              "model": "deepseek-v4-pro",
+              "choices": [
+                {
+                  "message": {
+                    "content": "<｜DSML｜tool_calls><｜DSML｜invoke name=\"project_search\"><｜DSML｜parameter name=\"glob\" string=\"true\">*.cs</｜DSML｜parameter><｜DSML｜parameter name=\"query\" string=\"true\">TODO</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>",
+                    "reasoning_content": "I should inspect the project."
+                  }
+                }
+              ]
+            }
+            """));
+        var client = new OpenAiCompatibleClient(new HttpClient(handler));
+        var tools = new[]
+        {
+            new LlmToolDefinition(
+                "project_search",
+                "Search files",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["glob"] = new("string", "Glob"),
+                    ["query"] = new("string", "Query", Required: true)
+                },
+                ["query"])
+        };
+
+        var response = await client.CompleteChatAsync(
+            new ProviderSettings
+            {
+                BaseUrl = "https://api.deepseek.com",
+                Model = "deepseek-v4-pro",
+                SupportsThinking = true,
+                ThinkingEnabled = true
+            },
+            "key",
+            [new LlmChatMessage("user", "Find TODOs")],
+            tools);
+
+        Assert.Empty(response.Content);
+        Assert.Equal("I should inspect the project.", response.ReasoningContent);
+        var call = Assert.Single(response.ToolCalls!);
+        Assert.Equal("project_search", call.Name);
+        using var arguments = JsonDocument.Parse(call.ArgumentsJson);
+        Assert.Equal("*.cs", arguments.RootElement.GetProperty("glob").GetString());
+        Assert.Equal("TODO", arguments.RootElement.GetProperty("query").GetString());
+    }
+
+    [Fact]
+    public async Task CompleteChatAsync_BuffersStreamedDsmlAndNeverReportsItAsAnswerText()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => SseResponse(
+            """{"model":"deepseek-v4-pro","choices":[{"delta":{"content":"<|| DSML || invoke name=\"project_read_file\">"}}]}""",
+            """{"choices":[{"delta":{"content":"<|| DSML || parameter name=\"path\" string=\"true\">README.md</|| DSML || parameter></|| DSML || invoke>"}}]}"""));
+        var client = new OpenAiCompatibleClient(new HttpClient(handler));
+        var answerDeltas = new List<string>();
+        var tools = new[]
+        {
+            new LlmToolDefinition(
+                "project_read_file",
+                "Read a file",
+                new Dictionary<string, ToolParameterDefinition>
+                {
+                    ["path"] = new("string", "Path", Required: true)
+                },
+                ["path"])
+        };
+
+        var response = await client.CompleteChatAsync(
+            new ProviderSettings
+            {
+                BaseUrl = "https://api.deepseek.com",
+                Model = "deepseek-v4-pro",
+                SupportsThinking = true,
+                ThinkingEnabled = true
+            },
+            "key",
+            [new LlmChatMessage("user", "Read README")],
+            tools,
+            streamProgress: new ImmediateProgress<LlmStreamDelta>(delta =>
+            {
+                if (!string.IsNullOrEmpty(delta.ContentDelta))
+                {
+                    answerDeltas.Add(delta.ContentDelta);
+                }
+            }));
+
+        Assert.Empty(answerDeltas);
+        Assert.Empty(response.Content);
+        var call = Assert.Single(response.ToolCalls!);
+        Assert.Equal("project_read_file", call.Name);
+        Assert.Equal("""{"path":"README.md"}""", call.ArgumentsJson);
+    }
+
+    [Fact]
+    public async Task CompleteChatAsync_UsesDeepSeekV4ThinkingToolCompatibilityFields()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => JsonResponse(
+            """
+            {
+              "choices": [
+                { "message": { "content": "done" } }
+              ]
+            }
+            """));
+        var client = new OpenAiCompatibleClient(new HttpClient(handler));
+        var tools = new[]
+        {
+            new LlmToolDefinition("project_read_file", "Read", new Dictionary<string, ToolParameterDefinition>(), [])
+        };
+
+        await client.CompleteChatAsync(
+            new ProviderSettings
+            {
+                BaseUrl = "https://api.deepseek.com",
+                Model = "deepseek-v4-pro",
+                SupportsThinking = true,
+                ThinkingEnabled = true
+            },
+            "key",
+            [
+                new LlmChatMessage(
+                    "assistant",
+                    "",
+                    ToolCalls: [new ToolCallRequest("call_1", "project_read_file", "{}")],
+                    ReasoningContent: "I need the file."),
+                new LlmChatMessage("tool", "contents", ToolCallId: "call_1")
+            ],
+            tools);
+
+        var request = Assert.Single(handler.Requests);
+        using var payload = JsonDocument.Parse(request.Body!);
+        Assert.False(payload.RootElement.TryGetProperty("tool_choice", out _));
+        Assert.Equal(
+            "I need the file.",
+            payload.RootElement.GetProperty("messages")[0].GetProperty("reasoning_content").GetString());
+        Assert.Equal("", payload.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+    }
+
     private static HttpResponseMessage JsonResponse(string json)
     {
         return new HttpResponseMessage(HttpStatusCode.OK)

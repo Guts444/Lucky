@@ -80,7 +80,25 @@ public sealed partial class MainPage : Page
             return;
         }
 
-        if (!await Launcher.LaunchUriAsync(new Uri(login.AuthorizationUrl)))
+        if (!Uri.TryCreate(login.AuthorizationUrl, UriKind.Absolute, out var authorizationUri) ||
+            authorizationUri.Scheme != Uri.UriSchemeHttps)
+        {
+            ViewModel.CodexConnectionStatus = "Codex returned an invalid ChatGPT sign-in address.";
+            ViewModel.IsCodexSignInInProgress = false;
+            return;
+        }
+
+        bool launched;
+        try
+        {
+            launched = await Launcher.LaunchUriAsync(authorizationUri);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        {
+            launched = false;
+        }
+
+        if (!launched)
         {
             ViewModel.CodexConnectionStatus = "Windows could not open the ChatGPT sign-in page.";
             ViewModel.IsCodexSignInInProgress = false;
@@ -98,6 +116,12 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private void ProviderSetup_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ApiKeyBox.Password = "";
+        ViewModel.ApiKeyInput = "";
+    }
+
     private void SettingsSection_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: string section })
@@ -108,7 +132,7 @@ public sealed partial class MainPage : Page
         var target = section switch
         {
             "General" => GeneralSettingsSection,
-            "Model" => ModelSettingsSection,
+            "Providers" => ProviderSettingsSection,
             "Personalization" => PersonalizationSettingsSection,
             "Memory" => MemorySettingsSection,
             "Searxng" => SearxngSettingsSection,

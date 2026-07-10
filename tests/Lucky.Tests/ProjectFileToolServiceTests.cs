@@ -132,6 +132,26 @@ public sealed class ProjectFileToolServiceTests
     }
 
     [Fact]
+    public async Task SearchAsync_ReportsRegexTimeoutAsAToolError()
+    {
+        var (root, project) = CreateProject();
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "input.txt"), new string('a', 20_000) + "!");
+            var service = new ProjectFileToolService();
+
+            var result = await service.SearchAsync(project, "(a+)+$", glob: "*.txt");
+
+            Assert.True(result.IsError);
+            Assert.Contains("too long", result.Output, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
     public async Task WriteAndEditAsync_CreateAndModifyFilesInsideProject()
     {
         var (root, project) = CreateProject();

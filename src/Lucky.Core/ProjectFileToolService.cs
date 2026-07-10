@@ -162,9 +162,20 @@ public sealed class ProjectFileToolService : IProjectFileToolService
                 foreach (var line in await File.ReadAllLinesAsync(file, cancellationToken).ConfigureAwait(false))
                 {
                     lineNumber++;
-                    var matched = regex is not null
-                        ? regex.IsMatch(line)
-                        : line.Contains(query, StringComparison.OrdinalIgnoreCase);
+                    bool matched;
+                    try
+                    {
+                        matched = regex is not null
+                            ? regex.IsMatch(line)
+                            : line.Contains(query, StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        return Error(
+                            "project.search",
+                            $"{input} | {query}",
+                            "The regular expression took too long to evaluate. Use a simpler expression or a literal search.");
+                    }
                     if (!matched)
                     {
                         continue;

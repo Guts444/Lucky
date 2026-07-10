@@ -5,6 +5,7 @@ namespace Lucky.Core;
 public sealed class LuckyStore
 {
     private readonly string _statePath;
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
 
     public LuckyStore(string? statePath = null)
     {
@@ -35,29 +36,52 @@ public sealed class LuckyStore
     public async Task SaveAsync(LuckyState state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        Normalize(state);
-        ProtectMcpLaunchConfigurations(state.Settings.Mcp);
+        await _saveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        string? tempPath = null;
+        try
+        {
+            Normalize(state);
+            ProtectMcpLaunchConfigurations(state.Settings.Mcp);
 
-        var directory = Path.GetDirectoryName(_statePath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
+            var directory = Path.GetDirectoryName(_statePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
 
-        var tempPath = $"{_statePath}.{Guid.NewGuid():N}.tmp";
-        await using (var stream = File.Create(tempPath))
-        {
-            await JsonSerializer.SerializeAsync(stream, state, LuckyJsonContext.Default.LuckyState, cancellationToken)
-                .ConfigureAwait(false);
-        }
+            tempPath = $"{_statePath}.{Guid.NewGuid():N}.tmp";
+            await using (var stream = File.Create(tempPath))
+            {
+                await JsonSerializer.SerializeAsync(stream, state, LuckyJsonContext.Default.LuckyState, cancellationToken)
+                    .ConfigureAwait(false);
+            }
 
-        if (File.Exists(_statePath))
-        {
-            File.Replace(tempPath, _statePath, null);
+            if (File.Exists(_statePath))
+            {
+                File.Replace(tempPath, _statePath, null);
+            }
+            else
+            {
+                File.Move(tempPath, _statePath);
+            }
+
+            tempPath = null;
         }
-        else
+        finally
         {
-            File.Move(tempPath, _statePath);
+            if (tempPath is not null)
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch (IOException)
+                {
+                    // A stale temp file is harmless and can be cleaned on a later save.
+                }
+            }
+
+            _saveGate.Release();
         }
     }
 
@@ -120,6 +144,9 @@ public sealed class LuckyStore
         {
             state.Settings.LmStudio.ContextWindowTokens = 32768;
         }
+        // Older builds could accidentally save a DeepSeek key while switching the generic
+        // provider editor to LM Studio. Local LM Studio never receives stored bearer secrets.
+        state.Settings.LmStudio.EncryptedApiKey = null;
 
         if (state.Settings.Custom.ContextWindowTokens <= 0)
         {

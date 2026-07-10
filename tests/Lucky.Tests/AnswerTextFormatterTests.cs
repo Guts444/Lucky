@@ -26,4 +26,21 @@ public sealed class AnswerTextFormatterTests
         Assert.Contains("Latest Xbox Headlines", formatted);
         Assert.Contains("1. Updated Xbox Console Prices", formatted);
     }
+
+    [Fact]
+    public void ForPlainChat_HidesLegacyDsmlProtocolMarkup()
+    {
+        var formatted = AnswerTextFormatter.ForPlainChat(
+            """
+            <| | DSML | | tool_calls>
+            <| | DSML | | invoke name="project_search">
+            <| | DSML | | parameter name="query" string="true">TODO</| | DSML | | parameter>
+            </| | DSML | | invoke>
+            </| | DSML | | tool_calls>
+            """);
+
+        Assert.DoesNotContain("DSML", formatted, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("project_search", formatted, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("internal protocol markup", formatted, StringComparison.OrdinalIgnoreCase);
+    }
 }
