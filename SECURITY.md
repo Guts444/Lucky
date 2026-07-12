@@ -13,7 +13,7 @@ By design, durable user data lives under the current Windows user profile, not i
 | Data | Location (typical) | Protection |
 | --- | --- | --- |
 | Settings, projects, chats, memories | `%LOCALAPPDATA%\Lucky\lucky-state.json` | API keys and MCP launch config via Windows DPAPI (current user) |
-| ChatGPT / Codex helper state | `%LOCALAPPDATA%\Lucky\CodexHome` | OAuth material as DPAPI-protected blob when at rest |
+| ChatGPT subscription helper state | `%LOCALAPPDATA%\Lucky\` helper home | OAuth material as DPAPI-protected blob when at rest |
 
 The repository must never contain live API keys, OAuth tokens, chat transcripts, or personal workspace state.
 

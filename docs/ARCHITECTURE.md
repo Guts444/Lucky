@@ -5,7 +5,7 @@ Lucky is a Windows desktop LLM harness with a local-first core. The design separ
 ## Architectural Goals
 
 - Local-first state: projects, sessions, settings, and memories live under the current user's local app data.
-- Provider flexibility: DeepSeek, LM Studio, custom OpenAI-compatible servers, and ChatGPT-backed Codex subscriptions share one Lucky provider interface.
+- Provider flexibility: DeepSeek, LM Studio, custom OpenAI-compatible servers, and optional ChatGPT subscription models share one Lucky provider interface.
 - User-controlled search: web lookup flows through a configured SearXNG endpoint.
 - Explicit external capabilities: trusted static page reading, MCP, and Docker sandbox execution are disabled until the user configures and enables them.
 - Project-scoped context: chats and memories can be tied to workspace folders.
@@ -26,7 +26,7 @@ Lucky.Core
   CredentialProtector.cs      Current-user DPAPI secret protection
   ContextEstimator.cs         Fallback token/character estimates for UI meters
   OpenAiCompatibleClient.cs   /models and /chat/completions provider calls
-  CodexAppServerClient.cs     Official local Codex app-server OAuth/model/tool bridge
+  CodexAppServerClient.cs     ChatGPT subscription app-server OAuth/model/tool bridge
   ProjectFileToolService.cs   Safe project-scoped list/read/search/write/edit/patch tools
   ProjectTerminalToolService.cs Bounded FullAccess Windows PowerShell command runner
   DockerCodeExecutionSandboxService.cs Opt-in constrained local-Docker code runner
@@ -44,7 +44,7 @@ Lucky.Tests
   Unit and behavior tests for core services
 ```
 
-The app shell mirrors the Codex desktop layout: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, a one-tone rounded multiline composer with compact pill/circle controls, a single chat-only model/reasoning picker, context/usage meter, follow-latest scrolling that stops when the user scrolls upward, a clickable empty-state working-folder path, and a settings workspace with provider setup separated into subscription and API/local groups.
+The app shell is a desktop agent workspace: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, a one-tone rounded multiline composer with compact pill/circle controls, a single chat-only model/reasoning picker, context/usage meter, follow-latest scrolling that stops when the user scrolls upward, a clickable empty-state working-folder path, and a settings workspace with provider setup separated into subscription and API/local groups.
 
 ## Public repository boundaries
 
@@ -89,13 +89,13 @@ Provider settings include display name, transport, base URL where applicable, mo
 - DeepSeek: `https://api.deepseek.com`, `deepseek-v4-pro`, API key required, thinking supported and enabled, 1,000,000 context tokens for v4 models.
 - LM Studio: `http://127.0.0.1:1234/v1`, no API key required.
 - Custom: `http://127.0.0.1:8000/v1`, no API key required by default.
-- OpenAI Codex: local official app-server transport, ChatGPT OAuth managed by Codex rather than Lucky, `gpt-5.5` default, and a safe 258,400-token default input budget until live metadata is available.
+- ChatGPT subscription: local official app-server transport, ChatGPT OAuth managed by the helper rather than Lucky, `gpt-5.5` default, and a safe 258,400-token default input budget until live metadata is available.
 
 API keys are unprotected only at call time through `CredentialProtector`. If a selected provider requires a key and none is configured, `AgentRunner` returns a user-facing setup message instead of calling the provider.
 
 When `SupportsThinking` is true, `OpenAiCompatibleClient` sends `thinking: { type: "enabled" }` plus `reasoning_effort` for thinking mode, or `thinking: { type: "disabled" }` plus temperature when disabled. Providers without thinking support receive the portable payload.
 
-Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window. For Codex, `CodexAppServerClient` reuses the authenticated account connection and pages through all visible entries from the official `model/list` catalog. It preserves each advertised reasoning-effort order and treats the effective input budget as the meter limit. It deliberately does not merge another app's/global Codex cache or synthesize unadvertised model ids, which preserves account isolation and avoids offering models the current Lucky sign-in may not be permitted to use. Windows Credential Manager's value limit is smaller than the ChatGPT OAuth bundle, so Lucky serializes helper startup, briefly materializes Codex's file credential, and immediately replaces it with a current-user DPAPI-protected `auth.json.dpapi` blob after initialization and token refreshes.
+Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window. For ChatGPT subscription models, `CodexAppServerClient` reuses the authenticated account connection and pages through all visible entries from the official `model/list` catalog. It preserves each advertised reasoning-effort order and treats the effective input budget as the meter limit. It deliberately does not merge another app's global cache or synthesize unadvertised model ids, which preserves account isolation and avoids offering models the current Lucky sign-in may not be permitted to use. Windows Credential Manager's value limit is smaller than the ChatGPT OAuth bundle, so Lucky serializes helper startup, briefly materializes the helper's file credential, and immediately replaces it with a current-user DPAPI-protected `auth.json.dpapi` blob after initialization and token refreshes.
 
 Tool schemas are sent as OpenAI-compatible `tools`; `tool_choice: auto` is used where supported and deliberately omitted for DeepSeek V4 thinking mode. Assistant tool-call messages, required `reasoning_content`, and `tool` results are serialized into the next round. Native `tool_calls` are parsed into provider-neutral `ToolCallRequest` records. A bounded compatibility parser also converts DeepSeek textual DSML only when the named tool was exposed in that request, and strips protocol markup from chat content. When a loop guard finalizes, Lucky calls the provider with no tools so the model must answer.
 
@@ -103,7 +103,7 @@ When the UI supplies stream progress, `OpenAiCompatibleClient` sends `stream: tr
 
 Provider responses can include standard OpenAI-compatible `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens`. Non-streaming responses parse usage directly. For thinking-capable streamed responses, Lucky asks for `stream_options.include_usage` and captures usage-only chunks before skipping empty choices. `AgentRunner` aggregates billed input/output usage across bounded tool-loop rounds, while carrying the latest request's input-context value separately for the composer meter.
 
-`CodexAppServerClient` launches `codex app-server --stdio`, initializes the documented local JSON-RPC protocol, and starts managed ChatGPT browser OAuth without receiving raw OAuth material. Every process receives a Lucky-owned `CODEX_HOME`, separate from the user's global Codex state. Lucky writes a restrictive managed config there that disables native shell, web search, apps, hooks, memories, remote plugins, and multi-agent features. Each turn also uses an ephemeral neutral directory, `read-only` sandbox, and `untrusted` approval policy. Lucky exposes selected-project tools as dynamic tools; their results return through the existing tool loop so access levels and traces remain authoritative.
+`CodexAppServerClient` launches the official local coding app-server over stdio, initializes the documented local JSON-RPC protocol, and starts managed ChatGPT browser OAuth without receiving raw OAuth material. Every process receives a Lucky-owned helper home, separate from any other app's subscription state. Lucky writes a restrictive managed config there that disables the helper's own shell, web search, apps, hooks, memories, remote plugins, and multi-agent features. Each turn also uses an ephemeral neutral directory, `read-only` sandbox, and `untrusted` approval policy. Lucky exposes selected-project tools as dynamic tools; their results return through the existing tool loop so access levels and traces remain authoritative.
 
 ## SearXNG Search
 

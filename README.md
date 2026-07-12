@@ -16,25 +16,16 @@ Lucky is a WinUI 3 desktop app for project-scoped chats with configurable model 
 
 ## Why Lucky
 
-- **Local-first:** chats, settings, and memories stay under your Windows profile by default.
-- **Your providers:** DeepSeek, LM Studio, custom OpenAI-compatible servers, and ChatGPT-backed Codex via the official local app-server.
-- **Explicit trust:** `Chat only`, `Workspace`, and `Full access` gates what the agent may touch.
-- **Visible tools:** file, search, shell, MCP, and sandbox actions show up in the Thinking trace instead of happening silently.
-- **Optional web:** user-controlled SearXNG, plus an opt-in trusted-domain page reader.
+Lucky is a native WinUI 3 desktop agent for Windows—not a thin wrapper around someone else’s chat product. You bring the model; Lucky owns the workspace loop, memory, tools, and trust boundaries.
 
-## Goals
-
-- Run as a native Windows desktop app using WinUI 3.
-- Keep user state local by default.
-- Support both remote and local OpenAI-compatible providers.
-- Make DeepSeek and LM Studio first-class setup paths.
-- Let ChatGPT subscribers use their available Codex models without copying an API key into Lucky.
-- Use a user-controlled SearXNG instance for web search.
-- Scope chats to projects so conversations stay tied to the workspace they are about.
-- Let the agent read, search, create, and edit files inside the selected project through traceable tools.
-- Capture durable memory only when useful, avoid secrets, and retrieve relevant memories into future turns.
-- Split memory into Hermes-style `USER` profile facts and `MEMORY` conversation/project facts with visible, enforced budgets.
-- Expose clear access levels so users know what Lucky can and cannot touch.
+- **Local-first by default.** Chats, settings, projects, and memories live under your Windows profile. API keys and MCP launch config are protected for the current user (DPAPI). Nothing durable is meant to live in the repo.
+- **Project file access you can see.** In Workspace or Full access, the agent can list, read, search, create, edit, and patch files inside the selected project—path-safe, with traces in Thinking. Full access can also run bounded PowerShell at the project root and an optional Docker sandbox that never mounts the host workspace.
+- **Durable memory with budgets.** Lucky captures useful facts (and skips likely secrets), splits them into long-lived `USER` profile notes and project/session `MEMORY` notes, retrieves what is in scope for the current access level, and enforces separate character budgets so memory cannot silently flood the prompt.
+- **Subagents for parallel work.** Built-ins such as `explorer`, `reviewer`, `tester`, `writer`, and `worker` (plus custom JSON agents) can take bounded child turns. They inherit access limits, stay on the selected project, and return compact summaries instead of dumping full child transcripts into the main chat.
+- **Your providers.** DeepSeek, LM Studio, custom OpenAI-compatible servers, and optional ChatGPT subscription models via a local app-server helper. Settings manage accounts and keys; the chat composer is the only model/reasoning picker.
+- **Explicit trust levels.** `Chat only`, `Workspace`, and `Full access` gate project context, filesystem tools, page reading, MCP, and sandbox. The agent should not imply it did work Lucky never ran.
+- **Visible tool loop.** File, search, shell, MCP, sandbox, and web actions show up in the Thinking expander instead of happening silently.
+- **Optional web.** User-controlled SearXNG for search, plus an opt-in trusted-domain static page reader (not a logged-in browser).
 
 ## Solution Layout
 
@@ -60,7 +51,7 @@ AGENTS.md         Contributor / coding-agent guide
 - Optional: LM Studio for local model hosting.
 - Optional: SearXNG for local or self-hosted web search.
 - Optional: a DeepSeek API key for hosted model calls.
-- Optional: the official Codex CLI for ChatGPT subscription models.
+- Optional: a ChatGPT plan and the official local OpenAI coding CLI (for subscription models under Settings → Subscription accounts).
 - Optional: Docker Desktop configured for Linux containers, plus a sandbox image that you have already built or loaded locally, for isolated code execution.
 
 ## Build
@@ -90,7 +81,7 @@ Lucky is designed so **your data stays on your machine**:
 
 When running as a packaged WinUI app, Windows may redirect local app data through the package LocalCache path, for example `%LOCALAPPDATA%\Packages\<LuckyPackage>\LocalCache\Local\Lucky\lucky-state.json`.
 
-That state includes settings, provider configuration, subagent settings, projects, chat sessions, and memory items. API keys and MCP launch configuration are stored only after being protected for the current Windows user (Windows DPAPI). ChatGPT/Codex OAuth material is handled through Lucky’s isolated Codex home and is not stored as a Lucky-owned plaintext token field.
+That state includes settings, provider configuration, subagent settings, projects, chat sessions, and memory items. API keys and MCP launch configuration are stored only after being protected for the current Windows user (Windows DPAPI). ChatGPT subscription OAuth material is kept in a Lucky-isolated helper home and is not stored as a Lucky-owned plaintext token field.
 
 **This repository must not contain** user state, transcripts, provider secrets, or local model artifacts. Local private notes can live under `docs/private/` (gitignored) or any `*.local.md` file—see `.gitignore`.
 
@@ -98,7 +89,7 @@ For vulnerability reports, see [SECURITY.md](SECURITY.md).
 
 ## Provider Setup
 
-Lucky uses OpenAI-compatible chat completions for API/local providers and the official local Codex app-server for ChatGPT subscription models. Settings separates **Subscription accounts** from **API & local providers**; the chat composer is the only model/reasoning picker.
+Lucky uses OpenAI-compatible chat completions for API and local providers. ChatGPT subscription models use a separate local app-server transport under **Subscription accounts**. Settings manages endpoints and keys; the chat composer is the only model/reasoning picker.
 
 Model calls stream when the provider supports chat-completions streaming. Lucky shows answer tokens as they arrive, keeps displayed answers clean for the plain chat canvas, tracks reasoning/thinking text separately when the provider supplies it, and still parses streamed tool calls so project actions can run before the final answer.
 
@@ -126,19 +117,19 @@ Use DeepSeek when you want hosted model calls.
 
 DeepSeek is configured as an API-key provider. For DeepSeek v4 options Lucky sends DeepSeek's `thinking` object and selected `reasoning_effort`, omits the incompatible `tool_choice` field in thinking mode, and replays `reasoning_content` across tool rounds as required by DeepSeek. Lucky also recognizes the provider's textual DSML fallback, validates it against the tools exposed in that request, and never renders protocol markup as an assistant answer.
 
-### OpenAI Codex with ChatGPT
+### ChatGPT subscription
 
-Lucky can use Codex models included with a connected ChatGPT plan through the official local Codex app-server. In Settings > Providers > Subscription accounts, choose **Connect** and finish the browser sign-in. Lucky accepts only an HTTPS authorization URL supplied by Codex; the app-server owns refresh-token storage and refreshes it itself. Lucky never reads or displays a ChatGPT OAuth token.
+Lucky can use models included with a connected ChatGPT plan through the official local OpenAI coding app-server. In Settings > Providers > Subscription accounts, choose **Connect** and finish the browser sign-in. Lucky accepts only an HTTPS authorization URL from the helper; the app-server owns refresh-token storage and refreshes it itself. Lucky never reads or displays a ChatGPT OAuth token.
 
-Lucky sets a dedicated `%LOCALAPPDATA%\Lucky\CodexHome` (or the packaged LocalCache equivalent) for every app-server process. This keeps Lucky's account, model cache, configuration, hooks, plugins, and MCP state separate from the Codex CLI and other apps. Because Windows Credential Manager cannot hold the full ChatGPT OAuth bundle, Lucky materializes Codex's file credential only while a helper starts and otherwise stores it as a current-user Windows DPAPI blob. Browser cookies may still make the OpenAI webpage recognize an existing browser session, but that does not mean Lucky reused another app's local credential. Settings provides explicit Connect, Disconnect, and account-model refresh controls.
+Lucky uses a dedicated helper home under `%LOCALAPPDATA%\Lucky\` (or the packaged LocalCache equivalent) for every app-server process so subscription state stays isolated from other apps. Because Windows Credential Manager cannot hold the full ChatGPT OAuth bundle, Lucky materializes the helper’s file credential only while a process starts and otherwise stores it as a current-user Windows DPAPI blob. Browser cookies may still make the OpenAI webpage recognize an existing browser session; that does not mean Lucky reused another app’s local credential. Settings provides explicit Connect, Disconnect, and account-model refresh controls.
 
-After connecting, choose **Refresh account models**. Lucky reuses that authenticated app-server session and calls the official `model/list` method; it exposes only the visible models and reasoning efforts advertised for Lucky's isolated sign-in. Lucky does not copy model entries from another Codex installation or invent newer model ids, so a model appears only after the installed official app-server advertises it for that account. Its context meter uses model metadata and is replaced by runtime-reported context after a response. Codex runs from an ephemeral neutral directory with a Lucky-managed private configuration that disables native shell, web-search, app, hook, memory, plugin, and multi-agent features; selected-project actions continue through Lucky's visible tools and access levels.
+After connecting, choose **Refresh account models**. Lucky reuses that authenticated session and exposes only the models and reasoning efforts advertised for Lucky’s isolated sign-in. It does not invent model ids or copy catalogs from other installations. Context metering uses model metadata and is replaced by runtime-reported context after a response. The helper runs from an ephemeral neutral directory with a Lucky-managed private configuration that disables the helper’s own shell, web-search, app, hook, memory, plugin, and multi-agent features; selected-project actions continue through Lucky’s visible tools and access levels.
 
-The official Codex CLI must be installed locally. Lucky detects the CLI's native executable, including the binary bundled by the official npm package, but never installs or updates it automatically.
+The official OpenAI coding CLI must be installed locally. Lucky detects its native executable (including the binary bundled by the official npm package) but never installs or updates it automatically.
 
 ## Chat Canvas
 
-Lucky's chat canvas is optimized for a Codex/Hermes-style desktop flow:
+Lucky’s chat canvas is a focused desktop agent workspace:
 
 - The composer uses one continuous, rounded surface; its text area does not switch to a separate highlighted panel on focus, and the access/model/action controls use compact rounded treatments.
 - On a project's empty state, the displayed working-folder path is a button that opens the folder picker, so the workspace can be changed without returning to the rail.
