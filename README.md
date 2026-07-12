@@ -4,15 +4,33 @@
 
 Lucky is a WinUI 3 desktop app for project-scoped chats with configurable model providers, SearXNG-backed web search, durable local memory, explicit access levels, and real project filesystem tools—with tool activity visible in the chat.
 
-> **Status:** pre-release / early public development. APIs, UI, and packaging are still moving. Expect breaking changes before a first stable release. Build from source; there is not yet a polished installer pipeline for end users.
+> **Status:** **v0.1.0** first public release. APIs and UI can still evolve; please report issues. Windows x64 installers ship on the [Releases](https://github.com/Guts444/Lucky/releases) page.
 
 | | |
 | --- | --- |
-| Platform | Windows 10 1809+ (WinUI 3 / Windows App SDK) |
+| Platform | Windows 10 1809+ (WinUI 3 / Windows App SDK), x64 installer |
 | License | [MIT](LICENSE) |
 | Core | `src/Lucky.Core` |
 | UI | `src/Lucky.App` |
 | Tests | `tests/Lucky.Tests` |
+
+## Install (Windows x64)
+
+1. Download the latest **Lucky-*-win-x64.zip** from [Releases](https://github.com/Guts444/Lucky/releases).
+2. Extract the zip.
+3. Run the current-user installer (no admin):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Install-Lucky.ps1 -Launch
+```
+
+Or run `Lucky.exe` directly from the extracted folder (portable; Windows App SDK is bundled).
+
+Uninstall:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Lucky\Uninstall-Lucky.ps1"
+```
 
 ## Why Lucky
 
@@ -22,7 +40,7 @@ Lucky is a native WinUI 3 desktop agent for Windows—not a thin wrapper around 
 - **Project file access you can see.** In Workspace or Full access, the agent can list, read, search, create, edit, and patch files inside the selected project—path-safe, with traces in Thinking. Full access can also run bounded PowerShell at the project root and an optional Docker sandbox that never mounts the host workspace.
 - **Durable memory with budgets.** Lucky captures useful facts (and skips likely secrets), splits them into long-lived `USER` profile notes and project/session `MEMORY` notes, retrieves what is in scope for the current access level, and enforces separate character budgets so memory cannot silently flood the prompt.
 - **Subagents for parallel work.** Built-ins such as `explorer`, `reviewer`, `tester`, `writer`, and `worker` (plus custom JSON agents) can take bounded child turns. They inherit access limits, stay on the selected project, and return compact summaries instead of dumping full child transcripts into the main chat.
-- **Your providers.** DeepSeek, LM Studio, custom OpenAI-compatible servers, and optional ChatGPT subscription models via a local app-server helper. Settings manage accounts and keys; the chat composer is the only model/reasoning picker.
+- **Your providers.** DeepSeek, **OpenRouter**, LM Studio, custom OpenAI-compatible servers, and optional ChatGPT subscription models via a local app-server helper. Settings manage accounts and keys; the chat composer is the only model/reasoning picker.
 - **Explicit trust levels.** `Chat only`, `Workspace`, and `Full access` gate project context, filesystem tools, page reading, MCP, and sandbox. The agent should not imply it did work Lucky never ran.
 - **Visible tool loop.** File, search, shell, MCP, sandbox, and web actions show up in the Thinking expander instead of happening silently.
 - **Optional web.** User-controlled SearXNG for search, plus an opt-in trusted-domain static page reader (not a logged-in browser).
@@ -51,6 +69,7 @@ AGENTS.md         Contributor / coding-agent guide
 - Optional: LM Studio for local model hosting.
 - Optional: SearXNG for local or self-hosted web search.
 - Optional: a DeepSeek API key for hosted model calls.
+- Optional: an [OpenRouter](https://openrouter.ai/) API key for multi-model access through one endpoint.
 - Optional: a ChatGPT plan and the official local OpenAI coding CLI (for subscription models under Settings → Subscription accounts).
 - Optional: Docker Desktop configured for Linux containers, plus a sandbox image that you have already built or loaded locally, for isolated code execution.
 
@@ -69,7 +88,13 @@ dotnet build src\Lucky.App\Lucky.App.csproj -p:Platform=x64
 dotnet run --project src\Lucky.App\Lucky.App.csproj -p:Platform=x64
 ```
 
-The WinUI app is packaged and references Windows App SDK tooling. Use the generated publish profiles under `src/Lucky.App/Properties/PublishProfiles` when packaging for a specific Windows architecture.
+To produce a release zip (self-contained, includes `Install-Lucky.ps1`):
+
+```powershell
+./scripts/publish-release.ps1 -Version 0.1.0
+```
+
+The WinUI app references Windows App SDK tooling. Release builds use an unpackaged, self-contained publish (`WindowsAppSDKSelfContained`) so end users do not need a separate runtime install.
 
 ## Privacy and local state
 
@@ -116,6 +141,17 @@ Use DeepSeek when you want hosted model calls.
 5. Use `Refresh models` to validate the connection; DeepSeek v4 models default the context meter to 1,000,000 tokens.
 
 DeepSeek is configured as an API-key provider. For DeepSeek v4 options Lucky sends DeepSeek's `thinking` object and selected `reasoning_effort`, omits the incompatible `tool_choice` field in thinking mode, and replays `reasoning_content` across tool rounds as required by DeepSeek. Lucky also recognizes the provider's textual DSML fallback, validates it against the tools exposed in that request, and never renders protocol markup as an assistant answer.
+
+### OpenRouter
+
+Use OpenRouter when you want one API key for many hosted models (OpenAI, Anthropic, Google, DeepSeek, and others).
+
+1. Create an API key at [openrouter.ai](https://openrouter.ai/).
+2. In Settings > Providers > API & local providers, choose `OpenRouter` and save the key. The endpoint is locked to `https://openrouter.ai/api/v1`.
+3. Pick a seed model from the chat composer (defaults include GPT-4o mini, GPT-4o, Claude Sonnet 4, Gemini 2.5 Flash, and DeepSeek Chat), or use **Refresh models** to load the live catalog.
+4. The composer keeps the list usable: seed models and your selection stay first; large catalogs are not dumped wholesale into the picker.
+
+Lucky sends standard OpenAI-compatible chat completions (including tools when the route supports them). Requests include optional OpenRouter attribution headers (`HTTP-Referer`, `X-Title`) so the app is identifiable as Lucky. OpenRouter is treated as a portable provider—not DeepSeek thinking mode—so DeepSeek-only payload fields are not sent.
 
 ### ChatGPT subscription
 

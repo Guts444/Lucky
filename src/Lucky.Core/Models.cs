@@ -8,7 +8,8 @@ public enum LlmProviderKind
     DeepSeek,
     LmStudio,
     CustomOpenAiCompatible,
-    OpenAiCodex
+    OpenAiCodex,
+    OpenRouter
 }
 
 /// <summary>
@@ -107,6 +108,67 @@ public sealed class AppSettings
         ContextWindowTokens = 32768
     };
 
+    public ProviderSettings OpenRouter { get; set; } = new()
+    {
+        DisplayName = "OpenRouter",
+        BaseUrl = "https://openrouter.ai/api/v1",
+        Model = "openai/gpt-4o-mini",
+        RequiresApiKey = true,
+        SupportsThinking = false,
+        ThinkingEnabled = false,
+        ReasoningEffort = "medium",
+        ContextWindowTokens = 128000,
+        ModelCapabilities =
+        [
+            new ProviderModelCapability
+            {
+                Id = "openai/gpt-4o-mini",
+                DisplayName = "GPT-4o mini",
+                Description = "OpenRouter · fast general default",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = 128000,
+                IsDefault = true
+            },
+            new ProviderModelCapability
+            {
+                Id = "openai/gpt-4o",
+                DisplayName = "GPT-4o",
+                Description = "OpenRouter · strong general model",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = 128000
+            },
+            new ProviderModelCapability
+            {
+                Id = "anthropic/claude-sonnet-4",
+                DisplayName = "Claude Sonnet 4",
+                Description = "OpenRouter · coding and agents",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = 200000
+            },
+            new ProviderModelCapability
+            {
+                Id = "google/gemini-2.5-flash",
+                DisplayName = "Gemini 2.5 Flash",
+                Description = "OpenRouter · fast multimodal",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = 1000000
+            },
+            new ProviderModelCapability
+            {
+                Id = "deepseek/deepseek-chat",
+                DisplayName = "DeepSeek Chat",
+                Description = "OpenRouter · DeepSeek via OpenRouter",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = 128000
+            }
+        ]
+    };
+
     public ProviderSettings OpenAiCodex { get; set; } = new()
     {
         DisplayName = "OpenAI Codex",
@@ -138,6 +200,7 @@ public sealed class AppSettings
     {
         LlmProviderKind.DeepSeek => DeepSeek,
         LlmProviderKind.LmStudio => LmStudio,
+        LlmProviderKind.OpenRouter => OpenRouter,
         LlmProviderKind.OpenAiCodex => OpenAiCodex,
         _ => Custom
     };

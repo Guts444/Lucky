@@ -153,6 +153,67 @@ public sealed class LuckyStore
             state.Settings.Custom.ContextWindowTokens = 32768;
         }
 
+        state.Settings.OpenRouter ??= new AppSettings().OpenRouter;
+        var openRouter = state.Settings.OpenRouter;
+        openRouter.DisplayName = "OpenRouter";
+        openRouter.BaseUrl = "https://openrouter.ai/api/v1";
+        openRouter.RequiresApiKey = true;
+        openRouter.Transport = ProviderTransport.OpenAiCompatible;
+        openRouter.SupportsThinking = false;
+        openRouter.ThinkingEnabled = false;
+        if (openRouter.ContextWindowTokens <= 0)
+        {
+            openRouter.ContextWindowTokens = 128000;
+        }
+
+        if (string.IsNullOrWhiteSpace(openRouter.Model))
+        {
+            openRouter.Model = "openai/gpt-4o-mini";
+        }
+
+        openRouter.ModelCapabilities ??= [];
+        if (openRouter.ModelCapabilities.Count == 0)
+        {
+            openRouter.ModelCapabilities = new AppSettings().OpenRouter.ModelCapabilities
+                .Select(CloneModelCapability)
+                .ToList();
+        }
+        else
+        {
+            openRouter.ModelCapabilities = openRouter.ModelCapabilities
+                .Where(model => !string.IsNullOrWhiteSpace(model.Id))
+                .GroupBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .Select(model =>
+                {
+                    model.DisplayName = string.IsNullOrWhiteSpace(model.DisplayName) ? model.Id : model.DisplayName.Trim();
+                    model.Description ??= "OpenRouter model";
+                    model.ReasoningEfforts ??= ["none"];
+                    model.DefaultReasoningEffort = "none";
+                    model.ContextWindowTokens = Math.Max(1024,
+                        model.ContextWindowTokens > 0
+                            ? model.ContextWindowTokens
+                            : openRouter.ContextWindowTokens);
+                    return model;
+                })
+                .ToList();
+        }
+
+        if (!openRouter.ModelCapabilities.Any(model =>
+                string.Equals(model.Id, openRouter.Model, StringComparison.OrdinalIgnoreCase)))
+        {
+            openRouter.ModelCapabilities.Insert(0, new ProviderModelCapability
+            {
+                Id = openRouter.Model,
+                DisplayName = openRouter.Model,
+                Description = "OpenRouter model",
+                ReasoningEfforts = ["none"],
+                DefaultReasoningEffort = "none",
+                ContextWindowTokens = openRouter.ContextWindowTokens,
+                IsDefault = true
+            });
+        }
+
         state.Settings.OpenAiCodex ??= new AppSettings().OpenAiCodex;
         var codex = state.Settings.OpenAiCodex;
         codex.DisplayName = "OpenAI Codex";
@@ -393,4 +454,15 @@ public sealed class LuckyStore
 
         return normalized;
     }
+
+    private static ProviderModelCapability CloneModelCapability(ProviderModelCapability source) => new()
+    {
+        Id = source.Id,
+        DisplayName = source.DisplayName,
+        Description = source.Description,
+        ReasoningEfforts = [.. source.ReasoningEfforts],
+        DefaultReasoningEffort = source.DefaultReasoningEffort,
+        ContextWindowTokens = source.ContextWindowTokens,
+        IsDefault = source.IsDefault
+    };
 }

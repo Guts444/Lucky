@@ -5,7 +5,7 @@ Lucky is a Windows desktop LLM harness with a local-first core. The design separ
 ## Architectural Goals
 
 - Local-first state: projects, sessions, settings, and memories live under the current user's local app data.
-- Provider flexibility: DeepSeek, LM Studio, custom OpenAI-compatible servers, and optional ChatGPT subscription models share one Lucky provider interface.
+- Provider flexibility: DeepSeek, OpenRouter, LM Studio, custom OpenAI-compatible servers, and optional ChatGPT subscription models share one Lucky provider interface.
 - User-controlled search: web lookup flows through a configured SearXNG endpoint.
 - Explicit external capabilities: trusted static page reading, MCP, and Docker sandbox execution are disabled until the user configures and enables them.
 - Project-scoped context: chats and memories can be tied to workspace folders.
@@ -25,7 +25,7 @@ Lucky.Core
   LuckyStore.cs               Local JSON persistence
   CredentialProtector.cs      Current-user DPAPI secret protection
   ContextEstimator.cs         Fallback token/character estimates for UI meters
-  OpenAiCompatibleClient.cs   /models and /chat/completions provider calls
+  OpenAiCompatibleClient.cs   /models and /chat/completions (DeepSeek, OpenRouter, LM Studio, custom)
   CodexAppServerClient.cs     ChatGPT subscription app-server OAuth/model/tool bridge
   ProjectFileToolService.cs   Safe project-scoped list/read/search/write/edit/patch tools
   ProjectTerminalToolService.cs Bounded FullAccess Windows PowerShell command runner
@@ -87,6 +87,7 @@ Writes are serialized through a per-store gate and use a temporary file plus rep
 Provider settings include display name, transport, base URL where applicable, model name, API-key requirement, protected API key, thinking support, reasoning flag, reasoning effort, effective input-context tokens, and cached provider model capabilities. Provider setup is independent from active chat selection. Settings edits accounts/endpoints/keys and refreshes catalogs; only the composer changes the active model/reasoning option. Defaults are:
 
 - DeepSeek: `https://api.deepseek.com`, `deepseek-v4-pro`, API key required, thinking supported and enabled, 1,000,000 context tokens for v4 models.
+- OpenRouter: `https://openrouter.ai/api/v1`, `openai/gpt-4o-mini` default, API key required, portable OpenAI-compatible payload (no DeepSeek thinking fields), seeded popular models plus optional live catalog refresh.
 - LM Studio: `http://127.0.0.1:1234/v1`, no API key required.
 - Custom: `http://127.0.0.1:8000/v1`, no API key required by default.
 - ChatGPT subscription: local official app-server transport, ChatGPT OAuth managed by the helper rather than Lucky, `gpt-5.5` default, and a safe 258,400-token default input budget until live metadata is available.
@@ -95,7 +96,7 @@ API keys are unprotected only at call time through `CredentialProtector`. If a s
 
 When `SupportsThinking` is true, `OpenAiCompatibleClient` sends `thinking: { type: "enabled" }` plus `reasoning_effort` for thinking mode, or `thinking: { type: "disabled" }` plus temperature when disabled. Providers without thinking support receive the portable payload.
 
-Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. LM Studio entries disable thinking fields and keep the user-configured local context window. For ChatGPT subscription models, `CodexAppServerClient` reuses the authenticated account connection and pages through all visible entries from the official `model/list` catalog. It preserves each advertised reasoning-effort order and treats the effective input budget as the meter limit. It deliberately does not merge another app's global cache or synthesize unadvertised model ids, which preserves account isolation and avoids offering models the current Lucky sign-in may not be permitted to use. Windows Credential Manager's value limit is smaller than the ChatGPT OAuth bundle, so Lucky serializes helper startup, briefly materializes the helper's file credential, and immediately replaces it with a current-user DPAPI-protected `auth.json.dpapi` blob after initialization and token refreshes.
+Known provider capabilities are normalized by the store and app view model. DeepSeek v4 models are treated as thinking-capable and use a 1,000,000-token context meter. OpenRouter locks its base URL, seeds a short popular model list, and can refresh the full catalog over `/models`; the composer prioritizes seeds and the selected model so huge catalogs stay usable. OpenRouter requests add optional `HTTP-Referer` / `X-Title` attribution headers. LM Studio entries disable thinking fields and keep the user-configured local context window. For ChatGPT subscription models, `CodexAppServerClient` reuses the authenticated account connection and pages through all visible entries from the official `model/list` catalog. It preserves each advertised reasoning-effort order and treats the effective input budget as the meter limit. It deliberately does not merge another app's global cache or synthesize unadvertised model ids, which preserves account isolation and avoids offering models the current Lucky sign-in may not be permitted to use. Windows Credential Manager's value limit is smaller than the ChatGPT OAuth bundle, so Lucky serializes helper startup, briefly materializes the helper's file credential, and immediately replaces it with a current-user DPAPI-protected `auth.json.dpapi` blob after initialization and token refreshes.
 
 Tool schemas are sent as OpenAI-compatible `tools`; `tool_choice: auto` is used where supported and deliberately omitted for DeepSeek V4 thinking mode. Assistant tool-call messages, required `reasoning_content`, and `tool` results are serialized into the next round. Native `tool_calls` are parsed into provider-neutral `ToolCallRequest` records. A bounded compatibility parser also converts DeepSeek textual DSML only when the named tool was exposed in that request, and strips protocol markup from chat content. When a loop guard finalizes, Lucky calls the provider with no tools so the model must answer.
 

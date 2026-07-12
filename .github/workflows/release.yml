@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish GitHub Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Version $version from tag $tag"
+
+      - name: Package release zip
+        shell: pwsh
+        run: |
+          ./scripts/publish-release.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Lucky-*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'preview') || contains(github.ref_name, 'rc') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
+          body: |
+            ## Lucky ${{ github.ref_name }}
+
+            Local-first WinUI 3 AI agent harness for Windows.
+
+            ### Install (Windows x64)
+
+            1. Download **Lucky-${{ steps.version.outputs.version }}-win-x64.zip** below.
+            2. Extract the zip.
+            3. Run `Install-Lucky.ps1` (current user, no admin), or double-click `Lucky.exe` for a portable run.
+
+            ```powershell
+            powershell -ExecutionPolicy Bypass -File .\Install-Lucky.ps1 -Launch
+            ```
+
+            ### What's included
+
+            - Project-scoped chat with visible tool traces
+            - Providers: DeepSeek, **OpenRouter**, LM Studio, custom OpenAI-compatible, ChatGPT subscription helper
+            - Durable local memory, subagents, access levels
+            - Optional SearXNG, MCP (stdio), Docker sandbox
+
+            Full notes: see README and the generated changelog.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

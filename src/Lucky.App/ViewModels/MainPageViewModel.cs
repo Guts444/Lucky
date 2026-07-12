@@ -42,7 +42,7 @@ public partial class MainPageViewModel : ObservableObject
     public ObservableCollection<ToolTraceItemViewModel> Trace { get; } = [];
     public ObservableCollection<string> AccessLevels { get; } = ["Chat only", "Workspace", "Full access"];
     public ObservableCollection<string> ProviderSetupOptions { get; } =
-        ["DeepSeek API", "LM Studio", "Custom OpenAI-compatible"];
+        ["DeepSeek API", "OpenRouter", "LM Studio", "Custom OpenAI-compatible"];
     public ObservableCollection<ModelOptionViewModel> ModelOptions { get; } = [];
     public ObservableCollection<string> ModelCatalog { get; } = [];
     public ObservableCollection<McpServerItemViewModel> McpServers { get; } = [];
@@ -738,16 +738,26 @@ public partial class MainPageViewModel : ObservableObject
             provider.ModelCapabilities = models.Select(model => new ProviderModelCapability
             {
                 Id = model,
-                DisplayName = model,
+                DisplayName = model.Contains('/') ? model[(model.LastIndexOf('/') + 1)..] : model,
                 Description = $"{provider.DisplayName} model",
                 ReasoningEfforts = ["none"],
                 DefaultReasoningEffort = "none",
                 ContextWindowTokens = provider.ContextWindowTokens
             }).ToList();
             if (models.Count > 0 && !models.Contains(provider.Model, StringComparer.OrdinalIgnoreCase) &&
-                providerKind != LlmProviderKind.DeepSeek)
+                providerKind is not (LlmProviderKind.DeepSeek or LlmProviderKind.OpenRouter))
             {
                 provider.Model = models[0];
+            }
+
+            if (providerKind == LlmProviderKind.OpenRouter &&
+                models.Count > 0 &&
+                !models.Contains(provider.Model, StringComparer.OrdinalIgnoreCase))
+            {
+                // Prefer a known seed default when the saved model is no longer listed.
+                provider.Model = models.Contains("openai/gpt-4o-mini", StringComparer.OrdinalIgnoreCase)
+                    ? "openai/gpt-4o-mini"
+                    : models[0];
             }
 
             RefreshModelOptions();
@@ -1102,6 +1112,7 @@ public partial class MainPageViewModel : ObservableObject
             AutoDelegateEnabled = _state.Settings.Subagents.AutoDelegateEnabled;
             MaxParallelSubagents = _state.Settings.Subagents.MaxParallelAgents;
             MaxSubagentsPerTurn = _state.Settings.Subagents.MaxAgentsPerTurn;
+            SelectedProviderSetup = ProviderSetupName(_state.Settings.ActiveProvider);
             HydrateProviderFields(ConfiguredProvider());
         }
         finally
@@ -1109,6 +1120,14 @@ public partial class MainPageViewModel : ObservableObject
             _isHydratingSettings = false;
         }
     }
+
+    private static string ProviderSetupName(LlmProviderKind kind) => kind switch
+    {
+        LlmProviderKind.OpenRouter => "OpenRouter",
+        LlmProviderKind.LmStudio => "LM Studio",
+        LlmProviderKind.CustomOpenAiCompatible => "Custom OpenAI-compatible",
+        _ => "DeepSeek API"
+    };
 
     private void HydrateProviderFields(ProviderSettings provider)
     {
@@ -1129,12 +1148,12 @@ public partial class MainPageViewModel : ObservableObject
     {
         var kind = ConfiguredProviderKind();
         ProviderEndpointVisibility = Visibility.Visible;
-        ApiKeyVisibility = kind is LlmProviderKind.DeepSeek or LlmProviderKind.CustomOpenAiCompatible
+        ApiKeyVisibility = kind is LlmProviderKind.DeepSeek or LlmProviderKind.OpenRouter or LlmProviderKind.CustomOpenAiCompatible
             ? Visibility.Visible
             : Visibility.Collapsed;
         CodexConnectionVisibility = Visibility.Collapsed;
         IsContextWindowEditable = true;
-        IsProviderEndpointEditable = kind != LlmProviderKind.DeepSeek;
+        IsProviderEndpointEditable = kind is not (LlmProviderKind.DeepSeek or LlmProviderKind.OpenRouter);
     }
 
     private void RefreshModelOptions()
@@ -1179,6 +1198,7 @@ public partial class MainPageViewModel : ObservableObject
             true,
             1000000));
 
+        AddOpenRouterModelOptions();
         AddDiscoveredProviderOptions(_state.Settings.LmStudio, LlmProviderKind.LmStudio, "LM Studio", "lmstudio");
         AddDiscoveredProviderOptions(_state.Settings.Custom, LlmProviderKind.CustomOpenAiCompatible, "Custom", "custom");
 
@@ -1196,7 +1216,7 @@ public partial class MainPageViewModel : ObservableObject
                     var displayEffort = FormatReasoningEffort(effort);
                     ModelOptions.Add(new ModelOptionViewModel(
                         $"codex|{capability.Id}|{effort}",
-                        $"OpenAI Codex · {capability.DisplayName} · {displayEffort}",
+                        $"ChatGPT · {capability.DisplayName} · {displayEffort}",
                         $"{capability.Description} · {CompactNumber(capability.ContextWindowTokens)} input context",
                         LlmProviderKind.OpenAiCodex,
                         capability.Id,
@@ -1208,13 +1228,14 @@ public partial class MainPageViewModel : ObservableObject
         }
 
         var active = _state.Settings.ActiveProviderSettings;
-        var activeKey = _state.Settings.ActiveProvider == LlmProviderKind.DeepSeek
-            ? $"{active.Model}|{active.ReasoningEffort}"
-            : _state.Settings.ActiveProvider == LlmProviderKind.LmStudio
-                ? $"lmstudio|{active.Model}"
-                : _state.Settings.ActiveProvider == LlmProviderKind.OpenAiCodex
-                    ? $"codex|{active.Model}|{active.ReasoningEffort}"
-                    : $"custom|{active.Model}";
+        var activeKey = _state.Settings.ActiveProvider switch
+        {
+            LlmProviderKind.DeepSeek => $"{active.Model}|{active.ReasoningEffort}",
+            LlmProviderKind.LmStudio => $"lmstudio|{active.Model}",
+            LlmProviderKind.OpenRouter => $"openrouter|{active.Model}",
+            LlmProviderKind.OpenAiCodex => $"codex|{active.Model}|{active.ReasoningEffort}",
+            _ => $"custom|{active.Model}"
+        };
 
         _isHydratingSettings = true;
         try
@@ -1226,6 +1247,66 @@ public partial class MainPageViewModel : ObservableObject
         finally
         {
             _isHydratingSettings = false;
+        }
+    }
+
+    private void AddOpenRouterModelOptions()
+    {
+        var provider = _state.Settings.OpenRouter;
+        var seedIds = new AppSettings().OpenRouter.ModelCapabilities
+            .Select(model => model.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var capabilities = provider.ModelCapabilities.Count > 0
+            ? provider.ModelCapabilities
+            : new AppSettings().OpenRouter.ModelCapabilities;
+
+        // OpenRouter catalogs are huge; keep the composer usable by prioritizing seeds + selection.
+        const int maxComposerModels = 40;
+        var ordered = capabilities
+            .Where(model => !string.IsNullOrWhiteSpace(model.Id))
+            .GroupBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderByDescending(model =>
+                string.Equals(model.Id, provider.Model, StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(model => seedIds.Contains(model.Id) || model.IsDefault)
+            .ThenBy(model => model.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Take(maxComposerModels)
+            .ToList();
+
+        foreach (var capability in ordered)
+        {
+            var contextTokens = capability.ContextWindowTokens > 0
+                ? capability.ContextWindowTokens
+                : provider.ContextWindowTokens;
+            var description = string.IsNullOrWhiteSpace(capability.Description)
+                ? $"OpenRouter · {CompactNumber(contextTokens)} context"
+                : $"{capability.Description} · {CompactNumber(contextTokens)} context";
+            ModelOptions.Add(new ModelOptionViewModel(
+                $"openrouter|{capability.Id}",
+                $"OpenRouter · {capability.DisplayName}",
+                description,
+                LlmProviderKind.OpenRouter,
+                capability.Id,
+                "none",
+                false,
+                contextTokens));
+        }
+
+        // Keep a selected model visible even if it is not in the seed/catalog yet.
+        if (!string.IsNullOrWhiteSpace(provider.Model) &&
+            !ModelOptions.Any(option =>
+                option.Provider == LlmProviderKind.OpenRouter &&
+                string.Equals(option.Model, provider.Model, StringComparison.OrdinalIgnoreCase)))
+        {
+            ModelOptions.Add(new ModelOptionViewModel(
+                $"openrouter|{provider.Model}",
+                $"OpenRouter · {provider.Model}",
+                $"OpenRouter · {CompactNumber(provider.ContextWindowTokens)} context",
+                LlmProviderKind.OpenRouter,
+                provider.Model,
+                "none",
+                false,
+                provider.ContextWindowTokens));
         }
     }
 
@@ -1299,9 +1380,12 @@ public partial class MainPageViewModel : ObservableObject
         var provider = ConfiguredProvider();
         if (provider.Transport != ProviderTransport.CodexAppServer)
         {
-            provider.BaseUrl = ConfiguredProviderKind() == LlmProviderKind.DeepSeek
-                ? "https://api.deepseek.com"
-                : ProviderEndpoint.Trim();
+            provider.BaseUrl = ConfiguredProviderKind() switch
+            {
+                LlmProviderKind.DeepSeek => "https://api.deepseek.com",
+                LlmProviderKind.OpenRouter => "https://openrouter.ai/api/v1",
+                _ => ProviderEndpoint.Trim()
+            };
         }
 
         provider.ContextWindowTokens = Math.Max(1024, ContextWindowTokens);
@@ -1314,6 +1398,7 @@ public partial class MainPageViewModel : ObservableObject
 
     private LlmProviderKind ConfiguredProviderKind() => SelectedProviderSetup switch
     {
+        "OpenRouter" => LlmProviderKind.OpenRouter,
         "LM Studio" => LlmProviderKind.LmStudio,
         "Custom OpenAI-compatible" => LlmProviderKind.CustomOpenAiCompatible,
         _ => LlmProviderKind.DeepSeek
@@ -1321,6 +1406,7 @@ public partial class MainPageViewModel : ObservableObject
 
     private ProviderSettings ConfiguredProvider() => ConfiguredProviderKind() switch
     {
+        LlmProviderKind.OpenRouter => _state.Settings.OpenRouter,
         LlmProviderKind.LmStudio => _state.Settings.LmStudio,
         LlmProviderKind.CustomOpenAiCompatible => _state.Settings.Custom,
         _ => _state.Settings.DeepSeek
@@ -1360,6 +1446,19 @@ public partial class MainPageViewModel : ObservableObject
                 if (provider.Model.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase))
                 {
                     provider.ContextWindowTokens = 1_000_000;
+                }
+
+                break;
+            case LlmProviderKind.OpenRouter:
+                provider.BaseUrl = "https://openrouter.ai/api/v1";
+                provider.RequiresApiKey = true;
+                provider.Transport = ProviderTransport.OpenAiCompatible;
+                provider.SupportsThinking = false;
+                provider.ThinkingEnabled = false;
+                provider.ReasoningEffort = "medium";
+                if (string.IsNullOrWhiteSpace(provider.Model))
+                {
+                    provider.Model = "openai/gpt-4o-mini";
                 }
 
                 break;

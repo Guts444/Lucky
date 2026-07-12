@@ -29,6 +29,9 @@ Before a release or large PR:
 - LM Studio: with the local server running at `http://127.0.0.1:1234/v1`, Lucky can list models and complete a chat without an API key.
 - DeepSeek: without an API key, Lucky shows setup guidance and does not call the provider.
 - DeepSeek: with a protected API key and model configured, Lucky can complete a chat through the OpenAI-compatible endpoint.
+- OpenRouter: without an API key, Lucky shows setup guidance and does not call the provider.
+- OpenRouter: with a protected API key, **Refresh models** hits `https://openrouter.ai/api/v1/models` and the composer stays usable (seeds + selection prioritized).
+- OpenRouter: a chat completion uses `openai/gpt-4o-mini` (or another selected route), sends Bearer auth plus Lucky attribution headers, and does not send DeepSeek-only `thinking` fields.
 - DeepSeek: `deepseek-v4-flash` and `deepseek-v4-pro` both work with Lucky's thinking payload and reasoning effort.
 - DeepSeek thinking mode sends `thinking` and `reasoning_effort`; portable providers do not receive DeepSeek-only fields.
 - DeepSeek reasoning text appears inside the message's `Thinking` expander when `reasoning_content` is returned.

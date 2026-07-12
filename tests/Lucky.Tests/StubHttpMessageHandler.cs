@@ -7,7 +7,8 @@ internal sealed record CapturedHttpRequest(
     Uri? RequestUri,
     AuthenticationHeaderValue? Authorization,
     string? Body,
-    string? ContentType);
+    string? ContentType,
+    IReadOnlyDictionary<string, string[]> Headers);
 
 internal sealed class StubHttpMessageHandler : HttpMessageHandler
 {
@@ -33,12 +34,19 @@ internal sealed class StubHttpMessageHandler : HttpMessageHandler
             ? null
             : await request.Content.ReadAsStringAsync(cancellationToken);
 
+        var headers = request.Headers
+            .ToDictionary(
+                header => header.Key,
+                header => header.Value.ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+
         Requests.Add(new CapturedHttpRequest(
             request.Method,
             request.RequestUri,
             request.Headers.Authorization,
             body,
-            request.Content?.Headers.ContentType?.MediaType));
+            request.Content?.Headers.ContentType?.MediaType,
+            headers));
 
         return _handler(request, body, cancellationToken);
     }

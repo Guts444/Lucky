@@ -532,6 +532,81 @@ public sealed class OpenAiCompatibleClientTests
         Assert.Equal("", payload.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
     }
 
+    [Fact]
+    public async Task CompleteChatAsync_OpenRouterSendsAttributionHeadersAndBearerAuth()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => JsonResponse(
+            """
+            {
+              "model": "openai/gpt-4o-mini",
+              "choices": [
+                {
+                  "message": {
+                    "content": "openrouter-ok"
+                  }
+                }
+              ]
+            }
+            """));
+        var client = new OpenAiCompatibleClient(new HttpClient(handler));
+        var provider = new ProviderSettings
+        {
+            DisplayName = "OpenRouter",
+            BaseUrl = "https://openrouter.ai/api/v1",
+            Model = "openai/gpt-4o-mini",
+            RequiresApiKey = true,
+            ThinkingEnabled = false
+        };
+
+        var response = await client.CompleteChatAsync(
+            provider,
+            " or-test-key ",
+            [new LlmChatMessage("user", "Say ok")]);
+
+        Assert.Equal("openrouter-ok", response.Content);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("https://openrouter.ai/api/v1/chat/completions", request.RequestUri?.ToString());
+        Assert.Equal("Bearer", request.Authorization?.Scheme);
+        Assert.Equal("or-test-key", request.Authorization?.Parameter);
+        Assert.True(request.Headers.TryGetValue("HTTP-Referer", out var referer));
+        Assert.Equal("https://github.com/Guts444/Lucky", Assert.Single(referer));
+        Assert.True(request.Headers.TryGetValue("X-Title", out var title));
+        Assert.Equal("Lucky", Assert.Single(title));
+
+        using var document = JsonDocument.Parse(request.Body!);
+        Assert.Equal("openai/gpt-4o-mini", document.RootElement.GetProperty("model").GetString());
+        Assert.False(document.RootElement.TryGetProperty("thinking", out _));
+    }
+
+    [Fact]
+    public async Task ListModelsAsync_OpenRouterParsesCatalogAndKeepsAttributionHeaders()
+    {
+        var handler = new StubHttpMessageHandler((_, _) => JsonResponse(
+            """
+            {
+              "data": [
+                { "id": "openai/gpt-4o-mini" },
+                { "id": "anthropic/claude-sonnet-4" }
+              ]
+            }
+            """));
+        var client = new OpenAiCompatibleClient(new HttpClient(handler));
+        var provider = new ProviderSettings
+        {
+            DisplayName = "OpenRouter",
+            BaseUrl = "https://openrouter.ai/api/v1"
+        };
+
+        var models = await client.ListModelsAsync(provider, "key");
+
+        Assert.Equal(["anthropic/claude-sonnet-4", "openai/gpt-4o-mini"], models);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("https://openrouter.ai/api/v1/models", request.RequestUri?.ToString());
+        Assert.True(request.Headers.TryGetValue("X-Title", out var title));
+        Assert.Equal("Lucky", Assert.Single(title));
+    }
+
     private static HttpResponseMessage JsonResponse(string json)
     {
         return new HttpResponseMessage(HttpStatusCode.OK)

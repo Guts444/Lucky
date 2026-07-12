@@ -26,7 +26,7 @@ Lucky is a WinUI 3, local-first LLM harness for Windows. Keep changes aligned wi
 
 ## Provider Expectations
 
-- Treat DeepSeek, LM Studio, and custom OpenAI-compatible servers as provider configurations behind the same chat-completions interface.
+- Treat DeepSeek, OpenRouter, LM Studio, and custom OpenAI-compatible servers as provider configurations behind the same chat-completions interface.
 - Keep provider defaults conservative and editable: base URL, model name, API-key requirement, and reasoning settings should be clear to the user.
 - Do not log or display raw API keys. If a provider requires a key and none is configured, Lucky should explain what is missing without trying the request.
 

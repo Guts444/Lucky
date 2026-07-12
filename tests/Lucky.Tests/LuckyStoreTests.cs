@@ -238,6 +238,57 @@ public sealed class LuckyStoreTests
         }
     }
 
+    [Fact]
+    public async Task LoadAsync_ProvidesOpenRouterDefaultsAndLocksEndpoint()
+    {
+        var tempRoot = CreateTempRoot();
+        try
+        {
+            var statePath = Path.Combine(tempRoot, "lucky-state.json");
+            await File.WriteAllTextAsync(statePath, """
+            {
+              "Settings": {
+                "Persona": "test",
+                "ActiveProvider": 4,
+                "AccessLevel": 1,
+                "DeepSeek": { "DisplayName": "DeepSeek", "BaseUrl": "https://api.deepseek.com", "Model": "deepseek-v4-pro" },
+                "LmStudio": { "DisplayName": "LM Studio", "BaseUrl": "http://127.0.0.1:1234/v1", "Model": "local-model" },
+                "Custom": { "DisplayName": "Custom", "BaseUrl": "http://127.0.0.1:8000/v1", "Model": "local-model" },
+                "OpenRouter": {
+                  "DisplayName": "OpenRouter",
+                  "BaseUrl": "https://evil.example/v1",
+                  "Model": "",
+                  "RequiresApiKey": false,
+                  "ContextWindowTokens": 0
+                }
+              },
+              "Projects": [],
+              "Sessions": [],
+              "Memories": []
+            }
+            """);
+
+            var state = await new LuckyStore(statePath).LoadAsync();
+            var openRouter = state.Settings.OpenRouter;
+
+            Assert.Equal("OpenRouter", openRouter.DisplayName);
+            Assert.Equal("https://openrouter.ai/api/v1", openRouter.BaseUrl);
+            Assert.True(openRouter.RequiresApiKey);
+            Assert.Equal(ProviderTransport.OpenAiCompatible, openRouter.Transport);
+            Assert.False(openRouter.SupportsThinking);
+            Assert.False(openRouter.ThinkingEnabled);
+            Assert.Equal("openai/gpt-4o-mini", openRouter.Model);
+            Assert.Equal(128000, openRouter.ContextWindowTokens);
+            Assert.Contains(openRouter.ModelCapabilities, model => model.Id == "openai/gpt-4o-mini");
+            Assert.Equal(LlmProviderKind.OpenRouter, state.Settings.ActiveProvider);
+            Assert.Same(openRouter, state.Settings.ActiveProviderSettings);
+        }
+        finally
+        {
+            DeleteTempRoot(tempRoot);
+        }
+    }
+
     private static string CreateTempRoot()
     {
         var path = Path.Combine(Path.GetTempPath(), "Lucky.Tests", Guid.NewGuid().ToString("N"));

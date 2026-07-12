@@ -32,7 +32,7 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint(provider.BaseUrl, "models"));
-        AddAuth(request, ProviderApiKey(provider, apiKey));
+        AddAuth(request, provider, ProviderApiKey(provider, apiKey));
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
@@ -74,7 +74,7 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(provider.BaseUrl, "chat/completions"));
-        AddAuth(request, ProviderApiKey(provider, apiKey));
+        AddAuth(request, provider, ProviderApiKey(provider, apiKey));
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -153,7 +153,7 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint(provider.BaseUrl, "chat/completions"));
-        AddAuth(request, ProviderApiKey(provider, apiKey));
+        AddAuth(request, provider, ProviderApiKey(provider, apiKey));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
@@ -505,12 +505,35 @@ public sealed class OpenAiCompatibleClient : ILlmClient
         provider.ThinkingEnabled &&
         provider.Model.StartsWith("deepseek-v4", StringComparison.OrdinalIgnoreCase);
 
-    private static void AddAuth(HttpRequestMessage request, string? apiKey)
+    private static void AddAuth(HttpRequestMessage request, ProviderSettings provider, string? apiKey)
     {
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
         }
+
+        // Optional OpenRouter attribution headers help the app appear correctly on openrouter.ai.
+        if (IsOpenRouter(provider))
+        {
+            request.Headers.TryAddWithoutValidation("HTTP-Referer", "https://github.com/Guts444/Lucky");
+            request.Headers.TryAddWithoutValidation("X-Title", "Lucky");
+        }
+    }
+
+    private static bool IsOpenRouter(ProviderSettings provider)
+    {
+        if (string.Equals(provider.DisplayName, "OpenRouter", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(provider.BaseUrl))
+        {
+            return false;
+        }
+
+        return Uri.TryCreate(provider.BaseUrl.Trim(), UriKind.Absolute, out var uri) &&
+               uri.Host.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ProviderApiKey(ProviderSettings provider, string? apiKey) =>

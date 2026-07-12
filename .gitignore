@@ -8,6 +8,8 @@ obj/
 TestResults/
 artifacts/
 publish/
+dist/
+releases/
 AppPackages/
 BundleArtifacts/
 *.user
