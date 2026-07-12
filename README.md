@@ -1,8 +1,26 @@
 # Lucky
 
-Lucky is a WinUI 3 local-first LLM harness for Windows. It is designed to give a user one desktop place for project-scoped chats, configurable model providers, SearXNG-backed web search, durable memory, explicit access levels, and real project filesystem tools.
+**Local-first AI agent harness for Windows.**
 
-The current repository has the core harness model in `src/Lucky.Core` and a Codex-inspired WinUI 3 shell in `src/Lucky.App`. The app layer has a glassy project/history rail, right-aligned user messages, left-aligned assistant output, a compact Thinking expander, selectable canvas text, a bottom composer with a single model/reasoning selector, access controls, a context/usage meter, follow-latest chat scrolling that yields to manual scrolling, a scrollable multiline composer, and a full settings workspace.
+Lucky is a WinUI 3 desktop app for project-scoped chats with configurable model providers, SearXNG-backed web search, durable local memory, explicit access levels, and real project filesystem tools—with tool activity visible in the chat.
+
+> **Status:** pre-release / early public development. APIs, UI, and packaging are still moving. Expect breaking changes before a first stable release. Build from source; there is not yet a polished installer pipeline for end users.
+
+| | |
+| --- | --- |
+| Platform | Windows 10 1809+ (WinUI 3 / Windows App SDK) |
+| License | [MIT](LICENSE) |
+| Core | `src/Lucky.Core` |
+| UI | `src/Lucky.App` |
+| Tests | `tests/Lucky.Tests` |
+
+## Why Lucky
+
+- **Local-first:** chats, settings, and memories stay under your Windows profile by default.
+- **Your providers:** DeepSeek, LM Studio, custom OpenAI-compatible servers, and ChatGPT-backed Codex via the official local app-server.
+- **Explicit trust:** `Chat only`, `Workspace`, and `Full access` gates what the agent may touch.
+- **Visible tools:** file, search, shell, MCP, and sandbox actions show up in the Thinking trace instead of happening silently.
+- **Optional web:** user-controlled SearXNG, plus an opt-in trusted-domain page reader.
 
 ## Goals
 
@@ -30,15 +48,19 @@ tests/
 docs/
   ARCHITECTURE.md Architecture and runtime behavior
   QA.md           Manual verification checklist
+LICENSE           MIT license
+SECURITY.md       Vulnerability reporting and hardening notes
+AGENTS.md         Contributor / coding-agent guide
 ```
 
 ## Requirements
 
 - Windows 10 1809 or newer, with the Windows App SDK runtime required by the app package.
-- .NET SDK matching the repository target framework.
+- .NET SDK matching the repository target framework (see project files under `src/`).
 - Optional: LM Studio for local model hosting.
 - Optional: SearXNG for local or self-hosted web search.
 - Optional: a DeepSeek API key for hosted model calls.
+- Optional: the official Codex CLI for ChatGPT subscription models.
 - Optional: Docker Desktop configured for Linux containers, plus a sandbox image that you have already built or loaded locally, for isolated code execution.
 
 ## Build
@@ -49,11 +71,18 @@ dotnet build Lucky.slnx
 dotnet test Lucky.slnx
 ```
 
+For the WinUI app on a typical x64 machine:
+
+```powershell
+dotnet build src\Lucky.App\Lucky.App.csproj -p:Platform=x64
+dotnet run --project src\Lucky.App\Lucky.App.csproj -p:Platform=x64
+```
+
 The WinUI app is packaged and references Windows App SDK tooling. Use the generated publish profiles under `src/Lucky.App/Properties/PublishProfiles` when packaging for a specific Windows architecture.
 
-## Runtime State
+## Privacy and local state
 
-Lucky stores application state outside the repository at:
+Lucky is designed so **your data stays on your machine**:
 
 ```text
 %LOCALAPPDATA%\Lucky\lucky-state.json
@@ -61,7 +90,11 @@ Lucky stores application state outside the repository at:
 
 When running as a packaged WinUI app, Windows may redirect local app data through the package LocalCache path, for example `%LOCALAPPDATA%\Packages\<LuckyPackage>\LocalCache\Local\Lucky\lucky-state.json`.
 
-That state includes settings, provider configuration, subagent settings, projects, chat sessions, and memory items. API keys are stored only after being protected for the current Windows user. The checked-in repository should not contain user state, transcripts, provider secrets, or local model artifacts.
+That state includes settings, provider configuration, subagent settings, projects, chat sessions, and memory items. API keys and MCP launch configuration are stored only after being protected for the current Windows user (Windows DPAPI). ChatGPT/Codex OAuth material is handled through Lucky’s isolated Codex home and is not stored as a Lucky-owned plaintext token field.
+
+**This repository must not contain** user state, transcripts, provider secrets, or local model artifacts. Local private notes can live under `docs/private/` (gitignored) or any `*.local.md` file—see `.gitignore`.
+
+For vulnerability reports, see [SECURITY.md](SECURITY.md).
 
 ## Provider Setup
 
@@ -230,6 +263,20 @@ Project-changing prompts in `ChatOnly` or `Workspace` receive a direct message a
 
 The assistant should never imply it performed filesystem, shell, browser, subagent, MCP, sandbox, or network actions unless Lucky explicitly supplied those tool results. Lucky has a bounded static page reader, stdio MCP host, an explicit FullAccess PowerShell runner, and an opt-in constrained Docker sandbox with clearly documented limits.
 
-## Contributor Rule
+## Contributing
 
-Keep `README.md` and `docs/ARCHITECTURE.md` current. If a change affects goals, provider setup, SearXNG, memory, project-scoped chats, access levels, persistence, or user-visible workflows, update the docs in the same change.
+Contributions are welcome once you are comfortable building and running from source.
+
+1. Read [AGENTS.md](AGENTS.md) for project boundaries and local-first rules.
+2. Keep `README.md` and `docs/ARCHITECTURE.md` current when user-visible behavior changes.
+3. Update `docs/QA.md` when provider setup, search, memory, persistence, or project-scoped chat behavior changes.
+4. Add tests for risky core behavior (memory, providers, persistence, search, tools).
+5. Never commit secrets, personal notes under `docs/private/`, or dumps of `%LOCALAPPDATA%\Lucky`.
+
+## License
+
+Lucky is released under the [MIT License](LICENSE).
+
+## Security
+
+Please report security issues privately as described in [SECURITY.md](SECURITY.md). Do not open public issues that include live API keys, tokens, or personal chat logs.

@@ -2,6 +2,8 @@
 
 Use this checklist for manual verification when changes affect the WinUI app shell, provider setup, SearXNG, memory, project-scoped chats, access levels, or persistence.
 
+Automated coverage lives in `tests/Lucky.Tests`. Run it first; use this document for UI, provider, and end-to-end checks that are hard to automate.
+
 ## Build And Test
 
 ```powershell
@@ -10,33 +12,17 @@ dotnet build Lucky.slnx
 dotnet test Lucky.slnx
 ```
 
-Verified on 2026-07-09:
+WinUI packaging often needs an explicit platform:
 
 ```powershell
 dotnet build src\Lucky.App\Lucky.App.csproj -p:Platform=x64
-dotnet test Lucky.slnx
 ```
 
-Latest verified results (2026-07-10):
+Before a release or large PR:
 
-- WinUI x64 app build passed with 0 warnings and 0 errors.
-- Debug and Release solution builds passed with 0 warnings and 0 errors.
-- xUnit passed 110/110 tests, including DeepSeek V4 compatibility payloads, native and textual DSML tool calls, suppression of streamed and legacy protocol markup, regex-timeout tool errors, streamed answer deltas, bounded tool loops, persistence, sandboxing, memory, and Codex defaults.
-- Computer Use visual QA launched Lucky and verified the Codex-like shell renders with the glassy project/history rail, darker chat workspace, centered empty state, rounded bottom composer, a single model/reasoning picker, access control, and a `0/1M` DeepSeek context meter.
-- Computer Use visual QA launched the patched x64 build and verified right-aligned user messages no longer show a visible `You` label, the user timestamp sits at the bottom of the bubble, assistant output stays left-aligned, the expander label is `Thinking`, and the Xbox answer no longer renders raw `##`, `###`, `---`, or stray bold markers.
-- Computer Use visual QA verified assistant canvas text can be drag-selected for copy, with Windows reporting selected text from the chat answer.
-- Computer Use visual QA verified the composer uses responsive max-width constraints and the usage meter now sits inside the composer instead of as a bottom-right overlay. Direct edge/corner resize drags were ignored by Windows during this pass, so narrow-width behavior was validated by code constraints plus the previously problematic composer no longer clipping in the captured available canvas.
-- Computer Use visual QA verified Settings only opens from the bottom-left profile row, the top-right settings button is absent, subscription/plus copy is absent, and the composer no longer shows stray `Settings` text.
-- Computer Use visual QA opened Settings and verified Providers is split into Subscription accounts and API & local providers, the settings model picker and decorative work-mode cards are gone, and provider editing does not change the chat composer selection.
-- Computer Use visual QA opened Settings after the subagent update and verified the new Subagents card renders cleanly with enable/auto-delegate toggles, max parallel/per-turn number boxes, custom-agent path text, Save button, and no overlap with adjacent sections.
-- Computer Use visual QA launched the current x64 build through `dotnet run`, opened Settings, scrolled to Memory, and verified the `Enable memories` toggle renders cleanly and flips off/on with the expected labels.
-- DeepSeek API smoke test used the protected saved key and received `flash-ok` from `deepseek-v4-flash` and `pro-ok` from `deepseek-v4-pro`.
-- Computer Use sent an end-to-end Lucky composer prompt through DeepSeek V4 Flash and verified the assistant response rendered in the chat canvas as `lucky-ui-ok`.
-- Computer Use sent a live DeepSeek V4 Pro prompt that required `project.read_file`; the Thinking trace showed `project.read_file done: Read README.md`, the assistant returned clean `live-tool-ok # Hanna Telegram Bot`, and no DSML markup appeared.
-- DeepSeek agent-tool smoke test used a temporary project folder. `deepseek-v4-flash` streamed answer chunks while reading `README.md` through `project.read_file`; `deepseek-v4-pro` streamed answer chunks while using `project.read_file` and `project.edit_file` to change `before edit` to `after edit`.
-- Computer Use visual QA verified the current x64 build auto-scrolls the chat canvas to the latest loaded messages, including the `lucky-autoscroll-fixed` and `say ok` responses, when launched with `dotnet run -p:Platform=x64`.
-- Computer Use visual QA rebuilt and launched the current debug app through `dotnet run`, verified the normal rail/history, chat canvas, Full access selector, composer, and new-chat empty state render without overlap or clipping.
-- Computer Use visual QA launched the current rebuilt app, verified the visible Stop control beside Send, then opened Settings and confirmed the MCP copy states that saved launch configuration is protected for the current Windows user. The lower Code execution sandbox card renders cleanly with its disabled-by-default toggle, bounded resource inputs, no-host-folders boundary text, local-Docker note, and nearby `Save settings` button.
+- Solution builds cleanly in Debug and Release with no unexpected warnings.
+- `dotnet test Lucky.slnx` passes.
+- Visual pass of the main shell: project/history rail, chat canvas, composer (model/reasoning, access, context meter), Thinking expander, Settings entry from the bottom-left profile row.
 
 ## Provider Checks
 
@@ -66,14 +52,14 @@ Latest verified results (2026-07-10):
 - `ChatOnly` can use `web_search` without exposing project filesystem tools.
 - Automatic web search triggers for current-looking prompts when `AutoWebSearch` is enabled.
 - Automatic web search does not trigger for offline artifact/build prompts such as creating a standalone HTML canvas game, unless the user explicitly uses `/web`.
-- A current-news prompt such as `give me the latest xbox news` renders cleanly without raw `##`, `###`, `---`, or stray `**` artifacts in the assistant answer.
+- A current-news prompt renders cleanly without raw decorative markdown artifacts (`##`, `###`, `---`, stray bold markers) in the assistant answer when the formatter is enabled.
 - Search failure adds a trace entry but does not crash the turn.
 - Search result count respects `WebSearchMaxResults`.
 
 ## Trusted Page Reader Checks
 
 - With page reading disabled, `web_open` is not registered with the model and no page request is made.
-- With `FullAccess`, page reading enabled, and `docs.example.com` trusted, the `web_open` tool is registered and can return readable static page text.
+- With `FullAccess`, page reading enabled, and a trusted domain configured, the `web_open` tool is registered and can return readable static page text.
 - `ChatOnly` and `Workspace` do not expose `web_open`, even when the setting is enabled.
 - An initial URL or redirect outside the trusted-domain list is refused before Lucky fetches the destination.
 - Non-default ports and hosts resolving to loopback/private/link-local/reserved addresses are refused before Lucky fetches the destination.
@@ -96,14 +82,6 @@ Latest verified results (2026-07-10):
 ## Docker Code Sandbox Checks
 
 - The Code execution sandbox card is visible at the bottom of Settings, clearly distinguishes itself from host PowerShell, says no host folders are mounted, and has a nearby `Save settings` button.
-
-## Composer and Scroll Checks
-
-- Focus and unfocus the composer. Confirm the outer rounded surface remains one tone and the editable area does not gain a separate rectangular background or border.
-- Confirm the access and model selectors render as compact rounded controls and the Stop/Send actions remain circular, aligned, and usable at the minimum supported window width.
-- On a project's empty state, select the displayed working-folder path. Confirm the folder picker opens and choosing a different folder follows the standard add/select-project flow.
-- Type a message taller than the composer. Confirm the text box grows to its cap, exposes an internal vertical scrollbar, and its bottom line remains reachable. Enter inserts a line break; Ctrl+Enter and Send submit the message.
-- During a streaming response, scroll upward with the mouse wheel. Confirm Lucky stops forcing the canvas to the bottom. Scroll back to the latest message, then confirm follow-latest resumes for new streamed content.
 - Sandbox is off by default. With it off, with an empty image, or below `FullAccess`, `sandbox_execute` is not registered with the model and no Docker command runs.
 - Enable it only after manually building or loading a known local image that contains `sh` and the desired runtime. Lucky must not pull an image; a missing image is a visible trace error that says it was not available locally.
 - With Docker Desktop stopped, an attempted configured sandbox run becomes a visible Docker availability error rather than a hang, host-shell fallback, or automatic image pull.
@@ -113,6 +91,14 @@ Latest verified results (2026-07-10):
 - Confirm the service uses the local Windows Docker named pipe, rejects remote `DOCKER_HOST` or non-default `DOCKER_CONTEXT`, and refuses an image with declared Docker volumes before `docker run`.
 - Older saved read-only-project-mount settings are reset off during load; there is no host bind-mount option in the sandbox.
 - Confirm `ChatOnly`, `Workspace`, and subagents never receive `sandbox_execute`. Confirm `project_run_command` remains labeled and documented as unsandboxed current-user PowerShell.
+
+## Composer and Scroll Checks
+
+- Focus and unfocus the composer. Confirm the outer rounded surface remains one tone and the editable area does not gain a separate rectangular background or border.
+- Confirm the access and model selectors render as compact rounded controls and the Stop/Send actions remain circular, aligned, and usable at the minimum supported window width.
+- On a project's empty state, select the displayed working-folder path. Confirm the folder picker opens and choosing a different folder follows the standard add/select-project flow.
+- Type a message taller than the composer. Confirm the text box grows to its cap, exposes an internal vertical scrollbar, and its bottom line remains reachable. Enter inserts a line break; Ctrl+Enter and Send submit the message.
+- During a streaming response, scroll upward with the mouse wheel. Confirm Lucky stops forcing the canvas to the bottom. Scroll back to the latest message, then confirm follow-latest resumes for new streamed content.
 
 ## Memory Checks
 

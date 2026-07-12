@@ -24,6 +24,7 @@ public partial class MainPageViewModel : ObservableObject
         _store = new LuckyStore();
         _modelClient = new LuckyLlmClient();
         _agentRunner = new AgentRunner(_modelClient);
+        (ProfileDisplayName, ProfileInitials) = BuildLocalProfileLabels();
     }
 
     public MainPageViewModel(LuckyStore store, AgentRunner agentRunner, LuckyLlmClient modelClient)
@@ -31,6 +32,7 @@ public partial class MainPageViewModel : ObservableObject
         _store = store;
         _agentRunner = agentRunner;
         _modelClient = modelClient;
+        (ProfileDisplayName, ProfileInitials) = BuildLocalProfileLabels();
     }
 
     public ObservableCollection<ProjectItemViewModel> Projects { get; } = [];
@@ -44,6 +46,12 @@ public partial class MainPageViewModel : ObservableObject
     public ObservableCollection<ModelOptionViewModel> ModelOptions { get; } = [];
     public ObservableCollection<string> ModelCatalog { get; } = [];
     public ObservableCollection<McpServerItemViewModel> McpServers { get; } = [];
+
+    /// <summary>Windows account name shown on the local profile row (not a cloud identity).</summary>
+    public string ProfileDisplayName { get; }
+
+    /// <summary>Short initials for the local profile avatar badge.</summary>
+    public string ProfileInitials { get; }
 
     [ObservableProperty]
     public partial ProjectItemViewModel? SelectedProject { get; set; }
@@ -209,6 +217,24 @@ public partial class MainPageViewModel : ObservableObject
 
     [ObservableProperty]
     public partial string UserProfileUsageLabel { get; set; } = "User 0/1375";
+
+    private static (string DisplayName, string Initials) BuildLocalProfileLabels()
+    {
+        var userName = Environment.UserName?.Trim();
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            return ("Local user", "LU");
+        }
+
+        var parts = userName.Split([' ', '.', '_', '-'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var initials = parts.Length >= 2
+            ? string.Concat(char.ToUpperInvariant(parts[0][0]), char.ToUpperInvariant(parts[1][0]))
+            : userName.Length >= 2
+                ? userName[..2].ToUpperInvariant()
+                : userName.ToUpperInvariant();
+
+        return (userName, initials);
+    }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {

@@ -4,20 +4,43 @@ obj/
 **/obj/
 .vs/
 .vscode/
+.idea/
 TestResults/
 artifacts/
+publish/
+AppPackages/
+BundleArtifacts/
 *.user
 *.suo
 *.tmp
 *.log
+*.binlog
+*.msix
+*.msixupload
+*.appx
+*.appxbundle
+*.appxupload
 
 # Lucky local runtime state belongs under %LOCALAPPDATA%, not the repo.
 lucky-state.json
 *.db
 *.db-shm
 *.db-wal
+auth.json
+auth.json.dpapi
 
 # Never commit provider credentials or local environment overrides.
 .env
 .env.*
 secrets.json
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Local-only notes that should not ship with a public clone.
+# Put private checklists, personal release notes, or draft plans here.
+docs/private/
+*.local.md
+NOTES.local.md
+.secrets/

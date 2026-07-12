@@ -46,6 +46,10 @@ Lucky.Tests
 
 The app shell mirrors the Codex desktop layout: project/history rail, darker chat canvas, right-aligned user messages without a visible `You` label, left-aligned assistant output, selectable canvas text, a compact Thinking expander, a one-tone rounded multiline composer with compact pill/circle controls, a single chat-only model/reasoning picker, context/usage meter, follow-latest scrolling that stops when the user scrolls upward, a clickable empty-state working-folder path, and a settings workspace with provider setup separated into subscription and API/local groups.
 
+## Public repository boundaries
+
+Lucky is developed in a public repository. Contributor-facing product docs live in `README.md`, `docs/ARCHITECTURE.md`, and `docs/QA.md`. Local-only notes may be kept under `docs/private/` or `*.local.md` (gitignored). Runtime state, API keys, OAuth material, and chat transcripts must never be committed; they belong under the Windows user profile. See `SECURITY.md` for reporting and hardening expectations.
+
 ## Runtime State
 
 `LuckyStore` persists `LuckyState` as JSON:

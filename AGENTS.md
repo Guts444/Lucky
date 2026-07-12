@@ -44,5 +44,5 @@ Lucky's access levels are part of the user trust model:
 - Keep changes small and consistent with existing C# and XAML patterns.
 - Add tests for risky core behavior, especially memory capture/retrieval, provider payloads, persistence, and search parsing.
 - Do not add network calls that bypass the configured provider or SearXNG settings.
-- if computer use gives errors, fix them and try again. don't skip using it if a visual test was needed or requested.
-- if anything visual is not working or not looking right, always use visual test mode, check yourself and fix it.   
+- Never commit secrets, personal notes under `docs/private/`, or local runtime state. See `SECURITY.md`.
+- If a change affects the UI, verify it visually (launch the app) rather than assuming XAML alone is correct. If an automated computer-use or visual check fails, fix the issue and re-run; do not skip visual verification when the change is visual.

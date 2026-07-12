@@ -216,14 +216,14 @@
                             </Grid.ColumnDefinitions>
                             <Border Width="28" Height="28" Background="#2D9CDB" CornerRadius="14">
                                 <TextBlock
-                                    Text="IB"
+                                    Text="{Binding ProfileInitials}"
                                     HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
                                     FontSize="11"
                                     FontWeight="SemiBold" />
                             </Border>
                             <StackPanel Grid.Column="1">
-                                <TextBlock Text="Igor Barreto" Foreground="{StaticResource TextBrush}" FontSize="13" />
+                                <TextBlock Text="{Binding ProfileDisplayName}" Foreground="{StaticResource TextBrush}" FontSize="13" />
                                 <TextBlock Text="Local profile" Foreground="{StaticResource MutedBrush}" FontSize="11" />
                             </StackPanel>
                         </Grid>
