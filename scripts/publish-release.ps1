@@ -1,29 +1,83 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Builds a self-contained win-x64 Lucky release zip with Install-Lucky.ps1.
+  Builds Lucky win-x64 installers: MSI (WiX) and Setup.exe (Inno Setup).
+
+.DESCRIPTION
+  1. Runs tests
+  2. Publishes a self-contained unpackaged WinUI app
+  3. Builds Lucky-{version}-win-x64.msi
+  4. Builds Lucky-{version}-win-x64-Setup.exe
+
+  Prerequisites (local):
+  - .NET SDK
+  - WiX CLI:  dotnet tool install -g wix
+              wix extension add -g WixToolset.UI.wixext
+  - Inno Setup 6 (ISCC.exe), typically via winget install JRSoftware.InnoSetup
 #>
 [CmdletBinding()]
 param(
     [string]$Configuration = "Release",
     [string]$Version = "0.1.0",
     [ValidateSet("x64")]
-    [string]$Platform = "x64"
+    [string]$Platform = "x64",
+    [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path $PSScriptRoot -Parent
 Set-Location $repoRoot
 
+function Resolve-Iscc {
+    $candidates = @(
+        "${env:LocalAppData}\Programs\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+    )
+    foreach ($path in $candidates) {
+        if ($path -and (Test-Path $path)) {
+            return $path
+        }
+    }
+    $cmd = Get-Command iscc -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+    return $null
+}
+
+function Resolve-WixUiExtension {
+    $root = Join-Path $env:USERPROFILE ".wix\extensions\WixToolset.UI.wixext"
+    if (-not (Test-Path $root)) {
+        return $null
+    }
+    $dll = Get-ChildItem -Path $root -Recurse -Filter "WixToolset.UI.wixext.dll" -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+    return $dll?.FullName
+}
+
 $rid = "win-$Platform"
 $publishDir = Join-Path $repoRoot "artifacts\publish\$rid"
-$stageDir = Join-Path $repoRoot "artifacts\stage\Lucky-$Version-$rid"
 $distDir = Join-Path $repoRoot "dist"
-$zipPath = Join-Path $distDir "Lucky-$Version-$rid.zip"
+$installerDir = Join-Path $repoRoot "installer"
+$msiPath = Join-Path $distDir "Lucky-$Version-$rid.msi"
+$setupPath = Join-Path $distDir "Lucky-$Version-$rid-Setup.exe"
 
-Write-Host "==> Restoring and testing"
-dotnet test (Join-Path $repoRoot "Lucky.slnx") -c $Configuration --nologo
-if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
+# MSI ProductVersion is major.minor.build (Windows Installer ignores a 4th field).
+$msiVersion = $Version
+if ($msiVersion -notmatch '^\d+\.\d+\.\d+') {
+    throw "Version must look like 0.1.0 (got '$Version')"
+}
+if ($msiVersion -match '^(\d+\.\d+\.\d+)') {
+    $msiVersion = $Matches[1]
+}
+
+if (-not $SkipTests) {
+    Write-Host "==> Restoring and testing"
+    dotnet test (Join-Path $repoRoot "Lucky.slnx") -c $Configuration --nologo
+    if ($LASTEXITCODE -ne 0) { throw "Tests failed." }
+}
 
 Write-Host "==> Publishing self-contained $rid"
 if (Test-Path $publishDir) {
@@ -54,55 +108,79 @@ if (-not (Test-Path $exePath)) {
     }
 }
 
-Write-Host "==> Staging release folder"
-if (Test-Path $stageDir) {
-    Remove-Item -LiteralPath $stageDir -Recurse -Force
+# Keep installer icon next to WiX/Inno sources.
+$iconSource = Join-Path $repoRoot "src\Lucky.App\Assets\AppIcon.ico"
+$iconDest = Join-Path $installerDir "AppIcon.ico"
+if (Test-Path $iconSource) {
+    Copy-Item $iconSource $iconDest -Force
 }
-New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
-Copy-Item -Path (Join-Path $publishDir "*") -Destination $stageDir -Recurse -Force
-Copy-Item -Path (Join-Path $repoRoot "scripts\Install-Lucky.ps1") -Destination (Join-Path $stageDir "Install-Lucky.ps1") -Force
-Copy-Item -Path (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $stageDir "LICENSE.txt") -Force
-Copy-Item -Path (Join-Path $repoRoot "README.md") -Destination (Join-Path $stageDir "README.md") -Force
 
-@"
-Lucky $Version (Windows $Platform)
-
-Quick install (current user, no admin):
-  1. Extract this zip anywhere.
-  2. Right-click Install-Lucky.ps1 -> Run with PowerShell
-     or: powershell -ExecutionPolicy Bypass -File .\Install-Lucky.ps1 -Launch
-
-Portable run:
-  Double-click Lucky.exe in this folder (Windows App SDK is bundled).
-
-Uninstall:
-  powershell -ExecutionPolicy Bypass -File `"$env:LOCALAPPDATA\Programs\Lucky\Uninstall-Lucky.ps1`"
-
-Docs: https://github.com/Guts444/Lucky
-"@ | Set-Content -LiteralPath (Join-Path $stageDir "INSTALL.txt") -Encoding UTF8
-
-Write-Host "==> Creating zip"
 New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-if (Test-Path $zipPath) {
-    Remove-Item -LiteralPath $zipPath -Force
+
+# --- MSI (WiX) ---
+$wix = Get-Command wix -ErrorAction SilentlyContinue
+if (-not $wix) {
+    throw "WiX CLI not found. Install with: dotnet tool install -g wix"
 }
 
-# Compress-Archive is slow/fragile for large trees; prefer tar if available.
-$tar = Get-Command tar -ErrorAction SilentlyContinue
-if ($tar) {
-    Push-Location (Split-Path $stageDir -Parent)
-    try {
-        & tar -a -cf $zipPath (Split-Path $stageDir -Leaf)
-        if ($LASTEXITCODE -ne 0) { throw "tar failed" }
-    } finally {
-        Pop-Location
-    }
-} else {
-    Compress-Archive -Path $stageDir -DestinationPath $zipPath -Force
+$uiExt = Resolve-WixUiExtension
+if (-not $uiExt) {
+    Write-Host "WiX UI extension missing; installing WixToolset.UI.wixext..."
+    & wix extension add -g WixToolset.UI.wixext
+    $uiExt = Resolve-WixUiExtension
+}
+if (-not $uiExt) {
+    throw "Could not resolve WixToolset.UI.wixext.dll"
 }
 
-$sizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
+Write-Host "==> Building MSI (WiX)"
+if (Test-Path $msiPath) { Remove-Item -LiteralPath $msiPath -Force }
+
+& wix build `
+    (Join-Path $installerDir "Package.wxs") `
+    -arch $Platform `
+    -ext $uiExt `
+    -d "ProductVersion=$msiVersion" `
+    -b "Payload=$publishDir" `
+    -b "Installer=$installerDir" `
+    -o $msiPath `
+    -pdbtype none `
+    -dcl high
+
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $msiPath)) {
+    throw "WiX MSI build failed."
+}
+
+# --- Setup.exe (Inno Setup) ---
+$iscc = Resolve-Iscc
+if (-not $iscc) {
+    throw "Inno Setup ISCC.exe not found. Install with: winget install JRSoftware.InnoSetup"
+}
+
+Write-Host "==> Building Setup.exe (Inno Setup)"
+if (Test-Path $setupPath) { Remove-Item -LiteralPath $setupPath -Force }
+
+& $iscc `
+    "/DMyAppVersion=$Version" `
+    "/DPayloadDir=$publishDir" `
+    "/DOutputDir=$distDir" `
+    (Join-Path $installerDir "Lucky.iss")
+
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $setupPath)) {
+    throw "Inno Setup build failed."
+}
+
+# Optional: drop legacy zip if present so releases stay focused on installers.
+$legacyZip = Join-Path $distDir "Lucky-$Version-$rid.zip"
+if (Test-Path $legacyZip) {
+    Remove-Item -LiteralPath $legacyZip -Force
+}
+
+$msiMb = [math]::Round((Get-Item $msiPath).Length / 1MB, 1)
+$setupMb = [math]::Round((Get-Item $setupPath).Length / 1MB, 1)
+
 Write-Host ""
-Write-Host "Release package ready:"
-Write-Host "  $zipPath ($sizeMb MB)"
-Write-Host "  staged: $stageDir"
+Write-Host "Release installers ready:"
+Write-Host "  MSI:  $msiPath ($msiMb MB)"
+Write-Host "  EXE:  $setupPath ($setupMb MB)"
+Write-Host "  App:  $publishDir"

@@ -16,20 +16,25 @@ Lucky is a WinUI 3 desktop app for project-scoped chats with configurable model 
 
 ## Install (Windows x64)
 
-1. Download the latest **Lucky-*-win-x64.zip** from [Releases](https://github.com/Guts444/Lucky/releases).
-2. Extract the zip.
-3. Run the current-user installer (no admin):
+Download the latest release from [Releases](https://github.com/Guts444/Lucky/releases):
+
+| File | Description |
+| --- | --- |
+| **Lucky-*-win-x64-Setup.exe** | Recommended guided installer (Inno Setup) |
+| **Lucky-*-win-x64.msi** | Windows Installer package (silent deploy friendly) |
+
+Both install a self-contained build (Windows App SDK bundled) to Program Files, create Start Menu shortcuts, and register an uninstaller.
+
+Silent MSI:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Install-Lucky.ps1 -Launch
+msiexec /i Lucky-0.1.0-win-x64.msi /qn
 ```
 
-Or run `Lucky.exe` directly from the extracted folder (portable; Windows App SDK is bundled).
-
-Uninstall:
+Uninstall from **Settings → Apps**, or:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Lucky\Uninstall-Lucky.ps1"
+msiexec /x Lucky-0.1.0-win-x64.msi /qn
 ```
 
 ## Why Lucky
@@ -88,13 +93,21 @@ dotnet build src\Lucky.App\Lucky.App.csproj -p:Platform=x64
 dotnet run --project src\Lucky.App\Lucky.App.csproj -p:Platform=x64
 ```
 
-To produce a release zip (self-contained, includes `Install-Lucky.ps1`):
+To produce release installers (requires [WiX](https://wixtoolset.org/) CLI + [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 
 ```powershell
+dotnet tool install -g wix
+wix extension add -g WixToolset.UI.wixext
+winget install --id JRSoftware.InnoSetup -e
 ./scripts/publish-release.ps1 -Version 0.1.0
 ```
 
-The WinUI app references Windows App SDK tooling. Release builds use an unpackaged, self-contained publish (`WindowsAppSDKSelfContained`) so end users do not need a separate runtime install.
+Outputs:
+
+- `dist/Lucky-0.1.0-win-x64.msi`
+- `dist/Lucky-0.1.0-win-x64-Setup.exe`
+
+Release builds use an unpackaged, self-contained publish (`WindowsAppSDKSelfContained`) so end users do not need a separate runtime install.
 
 ## Privacy and local state
 

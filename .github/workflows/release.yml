@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    name: Build and publish GitHub Release
+    name: Build MSI/EXE and publish GitHub Release
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -21,6 +21,25 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install -g wix --version 7.0.0
+          wix extension add -g WixToolset.UI.wixext
+          wix --version
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          winget install --id JRSoftware.InnoSetup -e --accept-source-agreements --accept-package-agreements
+          $iscc = @(
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found after Inno Setup install" }
+          Write-Host "ISCC=$iscc"
+
       - name: Resolve version
         id: version
         shell: pwsh
@@ -30,7 +49,7 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "Version $version from tag $tag"
 
-      - name: Package release zip
+      - name: Build installers
         shell: pwsh
         run: |
           ./scripts/publish-release.ps1 -Version "${{ steps.version.outputs.version }}"
@@ -38,7 +57,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Lucky-*.zip
+          files: |
+            dist/Lucky-*-win-x64.msi
+            dist/Lucky-*-win-x64-Setup.exe
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'preview') || contains(github.ref_name, 'rc') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
@@ -49,12 +70,19 @@ jobs:
 
             ### Install (Windows x64)
 
-            1. Download **Lucky-${{ steps.version.outputs.version }}-win-x64.zip** below.
-            2. Extract the zip.
-            3. Run `Install-Lucky.ps1` (current user, no admin), or double-click `Lucky.exe` for a portable run.
+            Download **one** of:
+
+            | Installer | Use when |
+            | --- | --- |
+            | `Lucky-*-win-x64-Setup.exe` | Recommended — guided setup wizard |
+            | `Lucky-*-win-x64.msi` | Enterprise / silent deploy (`msiexec`) |
+
+            Both install the self-contained app (Windows App SDK bundled) under Program Files and add Start Menu shortcuts.
+
+            Silent MSI example:
 
             ```powershell
-            powershell -ExecutionPolicy Bypass -File .\Install-Lucky.ps1 -Launch
+            msiexec /i Lucky-${{ steps.version.outputs.version }}-win-x64.msi /qn
             ```
 
             ### What's included
