@@ -54,6 +54,7 @@ jobs:
           -p:WindowsPackageType=None
           -p:SelfContained=true
           -p:WindowsAppSDKSelfContained=true
+          -p:PublishReadyToRun=true
           -p:PublishDir=${{ github.workspace }}/artifacts/publish/win-x64/
           --nologo
 

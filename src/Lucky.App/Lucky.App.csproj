@@ -79,10 +79,12 @@
     <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
   </PropertyGroup>
 
-  <!-- Publish Properties -->
+  <!-- Publish properties.
+       ReadyToRun needs special restore assets and only helps published output. Leave it off
+       for normal builds (CI Release build with no-restore fails with NETSDK1094 otherwise).
+       scripts/publish-release.ps1 and the CI publish job pass PublishReadyToRun=true. -->
   <PropertyGroup>
-    <PublishReadyToRun Condition="'$(Configuration)' == 'Debug'">False</PublishReadyToRun>
-    <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
+    <PublishReadyToRun Condition="'$(PublishReadyToRun)' == ''">false</PublishReadyToRun>
     <PublishTrimmed Condition="'$(Configuration)' == 'Debug'">False</PublishTrimmed>
     <!-- WinUI's framework-dependent desktop build is not safely trimmable. Keep Release
          builds publishable; a future self-contained packaging profile can opt in explicitly. -->
