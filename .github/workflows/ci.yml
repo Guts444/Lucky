@@ -19,8 +19,11 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # Lucky.App defaults RuntimeIdentifier to win-<arch>. Restore must request that RID
+      # or build fails with NETSDK1112 (runtime pack not downloaded). Do not pass -r to
+      # solution build/test (NETSDK1134); the app csproj already supplies the RID.
       - name: Restore
-        run: dotnet restore Lucky.slnx
+        run: dotnet restore Lucky.slnx -r win-x64
 
       - name: Build
         run: dotnet build Lucky.slnx -c Release --no-restore
